@@ -210,6 +210,8 @@ export default function TradeAI() {
     percentagem: 3, riscoPerfil: "conservador",
     maxPosicoesAbertas: 3, stopLossPadrao: 5, takeProfitPadrao: 10, autoInvestir: false,
   });
+  const liveSettingsRef = useRef({ capitalTotal:1000, modoValor:"fixo", valorFixo:50, percentagem:3,
+    riscoPerfil:"conservador", maxPosicoesAbertas:3, stopLossPadrao:5, takeProfitPadrao:10, autoInvestir:false });
   const [histTab, setHistTab] = useState("sim");   // "sim" | "live"
   // ── Day Trading ──
   const [dtActive,     setDtActive]     = useState(false);    // monitor activo
@@ -262,11 +264,13 @@ export default function TradeAI() {
     setOrderAmount(settings.modoValor === "fixo" ? settings.valorFixo : Math.max(10, +(INIT_BAL * settings.percentagem / 100).toFixed(0)));
   }, [settings]);
   const calcTradeAmount = useCallback(() => {
-    const s = simModeRef.current ? settingsRef.current : liveSettings;
-    const bal = simModeRef.current ? simBalRef.current : balRef.current;
+    // Use refs only — avoids stale closure and initialization order issues
+    const s   = simModeRef.current ? settingsRef.current : liveSettingsRef.current;
+    const bal = simModeRef.current ? simBalRef.current   : balRef.current;
+    if (!s) return 100; // fallback seguro
     if (s.modoValor === "percentagem") return Math.max(10, +(bal * s.percentagem / 100).toFixed(2));
-    return s.valorFixo;
-  }, [liveSettings]);
+    return s.valorFixo || 100;
+  }, []); // sem dependências — usa só refs
 
   // Stable refs for interval
   const balRef    = useRef(INIT_BAL);
@@ -280,8 +284,8 @@ export default function TradeAI() {
   useEffect(() => { balRef.current = balance; }, [balance]);
   useEffect(() => { simModeRef.current = simMode; }, [simMode]);
   useEffect(() => { simBalRef.current = simBalance; }, [simBalance]);
-  const liveSettingsRef = useRef(liveSettings);
   useEffect(() => { liveSettingsRef.current = liveSettings; }, [liveSettings]);
+
   useEffect(() => { simPosRef.current = simPositions; }, [simPositions]);
   useEffect(() => { stratRef.current = strategies; }, [strategies]);
   useEffect(() => { posRef.current = positions; }, [positions]);
