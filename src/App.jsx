@@ -205,6 +205,8 @@ export default function TradeAI() {
   const [simClosed,   setSimClosed]   = useState([]);     // trades fechados SIM
   const [simSummary,  setSimSummary]  = useState(null);   // resultado final mostrado no modal
   const [archivedSims, setArchivedSims] = useState([]);   // histórico de simulações arquivadas
+  const [simMode, setSimMode] = useState(true);   // true = simulação | false = live real
+  const simModeRef = useRef(true);
   const [liveSettings, setLiveSettings] = useState({      // definições separadas para live
     capitalTotal: 1000, modoValor: "fixo", valorFixo: 50,
     percentagem: 3, riscoPerfil: "conservador",
@@ -258,6 +260,13 @@ export default function TradeAI() {
     takeProfitPadrao:    12,
     autoInvestir:        false,
   });
+  const balRef    = useRef(INIT_BAL);
+  const stratRef  = useRef([]);
+  const posRef    = useRef([]);
+  const closedRef = useRef([]);
+  const assRef    = useRef(assets);
+  const highs     = useRef({});
+  const cds       = useRef({});
   const settingsRef = useRef(settings);
   useEffect(() => {
     settingsRef.current = settings;
@@ -273,13 +282,7 @@ export default function TradeAI() {
   }, []); // sem dependências — usa só refs
 
   // Stable refs for interval
-  const balRef    = useRef(INIT_BAL);
-  const stratRef  = useRef([]);
-  const posRef    = useRef([]);
-  const closedRef = useRef([]);
-  const assRef    = useRef(assets);
-  const highs     = useRef({});    // { assetId: { p, t } }
-  const cds       = useRef({});    // cooldown ticks { stratId_assetId: n }
+
 
   useEffect(() => { balRef.current = balance; }, [balance]);
   useEffect(() => { simModeRef.current = simMode; }, [simMode]);
@@ -911,8 +914,7 @@ JSON puro:
   // ─────────────────────────────────────────────
   // REAL MARKET DATA
   // ─────────────────────────────────────────────
-  const [simMode, setSimMode] = useState(true); // true = simulação | false = live real
-  const simModeRef = useRef(true);
+
   const [mktData,    setMktData]    = useState({});   // { id: { price, change, high24h, low24h, volume, sparkline } }
   const [mktLoading, setMktLoading] = useState(true);
   const [mktError,   setMktError]   = useState(null);
