@@ -195,6 +195,13 @@ function SectionLabel({ children }) {
 // ─── APP ─────────────────────────────────────────────────────────────────────
 export default function TradeAI() {
   const { user, loading: authLoading } = useAuth();
+  const [dbLoaded, setDbLoaded] = useState(false); // flag: firestore carregado
+  const [isMobile, setIsMobile] = useState(typeof window !== "undefined" && window.innerWidth < 820);
+  useEffect(() => {
+    const onResize = () => setIsMobile(window.innerWidth < 820);
+    window.addEventListener("resize", onResize);
+    return () => window.removeEventListener("resize", onResize);
+  }, []);
 
   const INIT_BAL = 10000;
 
@@ -367,6 +374,14 @@ export default function TradeAI() {
         if (toClose.length) {
           setClosed(p => [...toClose, ...p]);
           setPositions(toKeep);
+          // Persistir no Firestore
+          if (user) {
+            import("./firebase.js").then(({ updateTrade }) => {
+              toClose.forEach(t => updateTrade(user.uid, t.id, {
+                status: t.status, closePrice: t.closePrice, pnl: t.pnl, closedAt: t.closedAt,
+              }).catch(() => {}));
+            }).catch(() => {});
+          }
         }
 
         // 3. Strategy signals
@@ -528,7 +543,7 @@ JSON puro — inclui TODOS os ativos relevantes de TODAS as categorias:
           background: "linear-gradient(135deg,rgba(99,102,241,0.18) 0%,rgba(16,185,129,0.07) 100%)",
           border: "1px solid rgba(99,102,241,0.28)",
         }}>
-          <div style={{ display: "grid", gridTemplateColumns: "2fr 1fr 1fr 1fr", gap: 28 }}>
+          <div className="resp-hero" style={{ display: "grid", gridTemplateColumns: "2fr 1fr 1fr 1fr", gap: 28 }}>
             <div>
               <div style={{ fontSize: 10, color: T.aLight, letterSpacing: "0.14em", textTransform: "uppercase", marginBottom: 8 }}>Portfólio Total</div>
               <div style={{ fontSize: 40, fontWeight: 800, letterSpacing: "-0.03em" }}>€{portfolioV.toFixed(2)}</div>
@@ -544,7 +559,7 @@ JSON puro — inclui TODOS os ativos relevantes de TODAS as categorias:
         </Glass>
 
         {/* KPIs row */}
-        <div style={{ display: "grid", gridTemplateColumns: "repeat(5,1fr)", gap: 12 }}>
+        <div className="resp-grid" style={{ display: "grid", gridTemplateColumns: "repeat(5,1fr)", gap: 12 }}>
           {[
             { l: "Estratégias Ativas", v: strategies.filter(s => s.ativo).length, c: T.accent },
             { l: "Total Trades",       v: positions.length + closed.length,        c: T.blue   },
@@ -569,7 +584,7 @@ JSON puro — inclui TODOS os ativos relevantes de TODAS as categorias:
             <div style={{ fontSize: 12, fontWeight: 700, color: T.aLight }}>
               📂 Os meus Investimentos — {myPositions.length} posição{myPositions.length > 1 ? "ões" : ""} aberta{myPositions.length > 1 ? "s" : ""}
             </div>
-            <div style={{ display: "grid", gridTemplateColumns: "repeat(2,1fr)", gap: 12 }}>
+            <div className="resp-grid-2" style={{ display: "grid", gridTemplateColumns: "repeat(2,1fr)", gap: 12 }}>
               {myPositions.map(pos => {
                 const a      = assets.find(x => x.id === pos.assetId);
                 const price  = a?.price || pos.entryPrice;
@@ -683,6 +698,32 @@ JSON puro — inclui TODOS os ativos relevantes de TODAS as categorias:
     );
   };
 
+  // ── Investir numa sugestão AI directamente ─────────────────────────────────
+  const investirSugestao = (op) => {
+    const amount = aiSuggestions?.amount || calcTradeAmount();
+    const slPct  = settingsRef.current?.stopLossPadrao    || 6;
+    const tpPct  = settingsRef.current?.takeProfitPadrao  || 12;
+    const s = {
+      id:        uid(),
+      nome:      `${op.icone} ${op.nome}`,
+      descricao: op.porque,
+      logica:    `Entrada $${op.entrada} · SL $${op.sl} · TP $${op.tp}`,
+      ativos:    [op.id],
+      compra:    0.5,
+      perTrade:  amount,
+      sl:        slPct,
+      tp:        tpPct,
+      prazo:     op.prazo,
+      risco:     op.risco,
+      objetivo:  `Sugestão AI: ${(op.porque||"").slice(0, 60)}…`,
+      trades:    0,
+      ativo:     true,
+      criado:    new Date().toLocaleString("pt-PT"),
+    };
+    setStrategies(p => [s, ...p]);
+    toast(`✅ Estratégia "${s.nome}" criada e ativa!`, "buy");
+  };
+
   // ── AI: Sugerir oportunidades ──────────────────────────────────────────────
   const getSuggestions = async () => {
     setSuggestLoading(true);
@@ -739,14 +780,14 @@ JSON puro:
 
       {/* ── Tabela de oportunidades ── */}
       {aiSuggestions ? (
-        <Glass style={{ padding: "0" }}>
+        <Glass className="resp-scroll" style={{ padding: "0" }}>
           {/* Resumo topo */}
           <div style={{ padding: "16px 22px", borderBottom: `1px solid ${T.border}`, display: "flex", alignItems: "center", gap: 12 }}>
             <div style={{ width: 8, height: 8, borderRadius: "50%", background: momentoC, boxShadow: `0 0 8px ${momentoC}` }} />
             <div style={{ fontSize: 13, color: T.text }}>{aiSuggestions.resumo}</div>
           </div>
           {/* Header tabela */}
-          <div style={{ display: "grid", gridTemplateColumns: "2fr 1fr 1fr 1fr 1fr 1fr 1fr 140px", gap: 0, padding: "10px 22px", borderBottom: `1px solid ${T.border}` }}>
+          <div style={{ display: "grid", gridTemplateColumns: "2fr 1fr 1fr 1fr 1fr 1fr 1fr 140px", minWidth: isMobile ? 720 : "auto", gap: 0, padding: "10px 22px", borderBottom: `1px solid ${T.border}`, minWidth: isMobile ? 720 : "auto" }}>
             {["Ativo","Sinal","Porquê","Confiança","Risco","Retorno Esp.","Prazo",""].map(h => (
               <div key={h} style={{ fontSize: 9, color: T.muted, letterSpacing: "0.12em", textTransform: "uppercase", fontWeight: 600 }}>{h}</div>
             ))}
@@ -757,7 +798,7 @@ JSON puro:
             const isLast = i === (aiSuggestions.oportunidades.length - 1);
             return (
               <div key={op.id} style={{
-                display: "grid", gridTemplateColumns: "2fr 1fr 1fr 1fr 1fr 1fr 1fr 140px",
+                display: "grid", gridTemplateColumns: "2fr 1fr 1fr 1fr 1fr 1fr 1fr 140px", minWidth: isMobile ? 720 : "auto",
                 gap: 0, padding: "16px 22px", alignItems: "center",
                 borderBottom: isLast ? "none" : `1px solid ${T.border}33`,
                 background: i % 2 === 0 ? "rgba(255,255,255,0.01)" : "transparent",
@@ -1020,7 +1061,18 @@ JSON: {"signals":[{"id":"btc","sinal":"COMPRAR|VENDER|AGUARDAR","razao":"1 frase
       };
       if (isSim) {
         setSimPositions(p => [...p, pos]);
-        setSimBalance(b => { const n = +(Math.max(0, b - amount)).toFixed(2); simBalRef.current = n; return n; });
+        setSimBalance(b => {
+          const n = +(Math.max(0, b - amount)).toFixed(2);
+          simBalRef.current = n;
+          // Persiste no Firestore
+          if (user) {
+            import("./firebase.js").then(({ saveTrade, saveSetting }) => {
+              saveTrade(user.uid, pos).catch(() => {});
+              saveSetting(user.uid, "simBalance", n).catch(() => {});
+            }).catch(() => {});
+          }
+          return n;
+        });
       } else {
         setPositions(p => [...p, pos]);
         setBalance(b => { const n = +(Math.max(0, b - amount)).toFixed(2); balRef.current = n; return n; });
@@ -1365,7 +1417,7 @@ JSON: {"signals":[{"id":"btc","sinal":"COMPRAR|VENDER|AGUARDAR","razao":"1 frase
       </div>
 
       {/* Cards grid — top 15 per category, sorted by movement */}
-      <div style={{ display: "grid", gridTemplateColumns: "repeat(2,1fr)", gap: 14 }}>
+      <div className="resp-grid-2" style={{ display: "grid", gridTemplateColumns: "repeat(2,1fr)", gap: 14 }}>
         {(mktCatTab === "Todos"
           ? assets.filter(a => a.trade)
           : [...assets].filter(a => a.cat === mktCatTab)
@@ -1577,7 +1629,7 @@ JSON: {"signals":[{"id":"btc","sinal":"COMPRAR|VENDER|AGUARDAR","razao":"1 frase
           }} onClick={e => e.target===e.currentTarget && setOrderModal(null)}>
             <div style={{
               background: T.base, border: `1px solid ${col}44`,
-              borderRadius: 20, padding: "28px 32px", width: 460,
+              borderRadius: 20, padding: isMobile ? "20px 18px" : "28px 32px", width: isMobile ? "calc(100vw - 24px)" : 460, maxWidth: "calc(100vw - 24px)", maxHeight: "90vh", overflowY: "auto",
               boxShadow: `0 0 80px ${col}14`,
             }}>
               {/* Header */}
@@ -1711,7 +1763,7 @@ JSON: {"signals":[{"id":"btc","sinal":"COMPRAR|VENDER|AGUARDAR","razao":"1 frase
             <div style={{ fontSize:13, fontWeight:700 }}>🔥 Mais Movimentados Hoje — Top 20</div>
             <span style={{ fontSize:10, color:T.muted }}>variação % nas últimas 24h · atualiza automaticamente</span>
           </div>
-          <div style={{ display:"grid", gridTemplateColumns:"repeat(4,1fr)", gap:8 }}>
+          <div className="resp-grid-2" style={{ display:"grid", gridTemplateColumns:"repeat(4,1fr)", gap:8 }}>
             {topMovers.map((a, i) => {
               const col2 = a.change>=0 ? T.green : T.red;
               const sig  = marketSignals[a.id];
@@ -1813,7 +1865,7 @@ JSON: {"signals":[{"id":"btc","sinal":"COMPRAR|VENDER|AGUARDAR","razao":"1 frase
                 Sem recomendações para "{aiCat}" nesta análise.
               </div>
             ) : (
-              <div style={{ display:"grid", gridTemplateColumns:"repeat(2,1fr)", gap:12 }}>
+              <div className="resp-grid-2" style={{ display:"grid", gridTemplateColumns:"repeat(2,1fr)", gap:12 }}>
                 {filteredRecs.map(rec => {
                   const a      = assets.find(x => x.id === rec.id);
                   const isBest = rec.id === aiRec.melhor;
@@ -1928,7 +1980,7 @@ JSON: {"signals":[{"id":"btc","sinal":"COMPRAR|VENDER|AGUARDAR","razao":"1 frase
         </div>
 
         {/* KPIs */}
-        <div style={{ display: "grid", gridTemplateColumns: "repeat(4,1fr)", gap: 12 }}>
+        <div className="resp-grid-2" style={{ display: "grid", gridTemplateColumns: "repeat(4,1fr)", gap: 12 }}>
           {[
             { l: "P&L Realizado",     v: `${sign(filteredPnl)}${eur(filteredPnl)}`,                            c: filteredPnl >= 0 ? T.green : T.red },
             { l: "P&L Não Realizado", v: `${sign(unrealized)}${eur(unrealized)}`,                               c: unrealized >= 0 ? T.green : T.red },
@@ -2843,7 +2895,7 @@ JSON puro:
             )}
 
             {/* Cards de oportunidades */}
-            <div style={{ display:"grid", gridTemplateColumns:"repeat(2,1fr)", gap:12 }}>
+            <div className="resp-grid-2" style={{ display:"grid", gridTemplateColumns:"repeat(2,1fr)", gap:12 }}>
               {(dtScanResult.oportunidades || []).map(op => {
                 const a    = assets.find(x => x.id === op.id);
                 const live = mktData[op.id] || {};
@@ -3022,6 +3074,38 @@ JSON puro:
     { id: "guide",      icon: "◉",  label: "Guia Setup"     },
   ];
 
+  // ── Persistência Firestore: carregar estado ao iniciar ──────────────────
+  useEffect(() => {
+    if (!user) return;
+    const uid2 = user.uid;
+    // Carregar posições simuladas abertas
+    import("./firebase.js").then(({ subscribeTrades, subscribeBalance: subBal }) => {
+      const unsubTrades = subscribeTrades(uid2, (trades) => {
+        if (!dbLoaded) {
+          const open   = trades.filter(t => t.status === "ABERTA" && t.mode === "sim");
+          const closed_ = trades.filter(t => t.status !== "ABERTA" && t.mode === "sim");
+          setSimPositions(open);
+          simPosRef.current = open;
+          setSimClosed(closed_);
+          // Recalcular saldo
+          const spent = open.reduce((s, p) => s + (p.amount || 0), 0);
+          const earnedBack = closed_.reduce((s, t) => s + (t.amount || 0) + (t.pnl || 0), 0);
+          setDbLoaded(true);
+        }
+      });
+      const unsubBal = subBal(uid2, "simBalance", (val) => {
+        if (val && !dbLoaded) {
+          setSimBalance(val);
+          simBalRef.current = val;
+        }
+      });
+      return () => { unsubTrades(); unsubBal(); };
+    }).catch(() => {});
+  }, [user]);
+
+  // ── Persistência: guardar trade quando aberto ─────────────────────────────
+  // (chamado explicitamente nas funções de compra/venda)
+
   // ── Auth gate (after all hooks) ──────────────────────────────────────────
   const ALLOWED_EMAIL = "koresma@gmail.com";
   if (authLoading) return (
@@ -3058,10 +3142,31 @@ JSON puro:
         input:focus { outline: none; border-color: rgba(99,102,241,0.6) !important; box-shadow: 0 0 0 3px rgba(99,102,241,0.1) !important; }
         @keyframes pulse { 0%,100%{opacity:1} 50%{opacity:0.35} }
         @keyframes fadeIn { from{opacity:0;transform:translateY(8px)} to{opacity:1;transform:none} }
+
+        /* ── RESPONSIVE — Mobile ── */
+        @media (max-width: 820px) {
+          /* Colapsar todas as grelhas multi-coluna para 1 coluna */
+          .resp-grid { grid-template-columns: 1fr !important; }
+          .resp-grid-2 { grid-template-columns: repeat(2,1fr) !important; }
+          /* Esconder scrollbar horizontal de tabelas, permitir scroll */
+          .resp-scroll { overflow-x: auto !important; -webkit-overflow-scrolling: touch; }
+          /* Header mobile mais compacto */
+          .resp-header { padding: 0 12px !important; }
+          .resp-header-info { gap: 8px !important; font-size: 10px !important; }
+          .resp-hide-mobile { display: none !important; }
+          /* Cards e padding menores */
+          .resp-main { padding: 12px !important; padding-bottom: 90px !important; }
+          /* Hero do dashboard empilha */
+          .resp-hero { grid-template-columns: 1fr 1fr !important; gap: 16px !important; }
+        }
+        @media (max-width: 480px) {
+          .resp-grid-2 { grid-template-columns: 1fr !important; }
+          .resp-hero { grid-template-columns: 1fr !important; }
+        }
       `}</style>
 
       {/* HEADER */}
-      <header style={{
+      <header className="resp-header" style={{
         height: 56, background: "rgba(6,6,26,0.88)", backdropFilter: "blur(20px)",
         borderBottom: `1px solid ${T.border}`,
         display: "flex", alignItems: "center", justifyContent: "space-between",
@@ -3075,10 +3180,10 @@ JSON puro:
             fontSize: 14, fontWeight: 700,
           }}>◆</div>
           <span style={{ fontSize: 16, fontWeight: 800, letterSpacing: "-0.02em" }}>
-            TradeAI <span style={{ color: T.muted, fontWeight: 400, fontSize: 13 }}>Simulator</span>
+            TradeAI <span className="resp-hide-mobile" style={{ color: T.muted, fontWeight: 400, fontSize: 13 }}>Simulator</span>
           </span>
         </div>
-        <div style={{ display: "flex", alignItems: "center", gap: 18, fontSize: 12 }}>
+        <div className="resp-header-info" style={{ display: "flex", alignItems: "center", gap: 18, fontSize: 12 }}>
           {/* ── TOGGLE SIMULAÇÃO / LIVE ── */}
           <div
             onClick={() => {
@@ -3133,7 +3238,7 @@ JSON puro:
               <span style={{ color: T.red, fontWeight: 700, fontSize: 10, letterSpacing: "0.1em" }}>LIVE — DINHEIRO REAL</span>
             </div>
           )}
-          <span style={{ color: T.muted }}>Portfólio: <b style={{ color: T.text }}>€{portfolioV.toFixed(2)}</b></span>
+          <span className="resp-hide-mobile" style={{ color: T.muted }}>Portfólio: <b style={{ color: T.text }}>€{portfolioV.toFixed(2)}</b></span>
           <span style={{ color: T.muted }}>P&L: <b style={{ color: totalPnl >= 0 ? T.green : T.red }}>{sign(totalPnl)}{eur(totalPnl)}</b></span>
 
           {/* User + logout */}
@@ -3159,7 +3264,8 @@ JSON puro:
       </header>
 
       <div style={{ display: "flex" }}>
-        {/* SIDEBAR */}
+        {/* SIDEBAR — desktop only */}
+        {!isMobile && (
         <nav style={{
           width: 200, background: "rgba(11,11,34,0.7)", backdropFilter: "blur(20px)",
           borderRight: `1px solid ${T.border}`,
@@ -3189,7 +3295,6 @@ JSON puro:
               )}
             </div>
           ))}
-          {/* Bottom info */}
           <div style={{ marginTop: "auto", padding: "16px 18px", borderTop: `1px solid ${T.border}` }}>
             <div style={{ fontSize: 9, color: T.muted, letterSpacing: "0.12em", textTransform: "uppercase", marginBottom: 6 }}>Posições Abertas</div>
             <div style={{ fontSize: 22, fontWeight: 700 }}>{positions.length}</div>
@@ -3199,9 +3304,10 @@ JSON puro:
             </div>
           </div>
         </nav>
+        )}
 
         {/* MAIN */}
-        <main style={{ flex: 1, padding: "22px", overflowY: "auto", maxHeight: "calc(100vh - 56px)" }}>
+        <main className="resp-main" style={{ flex: 1, padding: "22px", overflowY: "auto", maxHeight: isMobile ? "none" : "calc(100vh - 56px)" }}>
           <div style={{ animation: "fadeIn 0.25s ease" }} key={tab}>
             {tab === "dashboard"  && <Dashboard />}
             {tab === "portfolio"  && <Portfolio />}
@@ -3215,6 +3321,43 @@ JSON puro:
           </div>
         </main>
       </div>
+
+      {/* ── MOBILE BOTTOM NAV ── */}
+      {isMobile && (
+        <nav style={{
+          position: "fixed", bottom: 0, left: 0, right: 0, zIndex: 400,
+          background: "rgba(6,6,26,0.96)", backdropFilter: "blur(20px)",
+          borderTop: `1px solid ${T.border}`,
+          display: "flex", overflowX: "auto", padding: "6px 4px",
+          paddingBottom: "max(6px, env(safe-area-inset-bottom))",
+        }}>
+          {NAV.map(item => {
+            const active = tab === item.id;
+            const badge = item.id === "strategies" ? strategies.filter(s => s.ativo).length
+                        : item.id === "portfolio"  ? (positions.length + simPositions.length)
+                        : 0;
+            return (
+              <div key={item.id} onClick={() => { setTab(item.id); window.scrollTo(0,0); }} style={{
+                flex: "0 0 auto", minWidth: 62, display: "flex", flexDirection: "column",
+                alignItems: "center", gap: 3, padding: "6px 8px", cursor: "pointer",
+                position: "relative",
+                color: active ? T.aLight : T.muted,
+              }}>
+                <span style={{ fontSize: 18, opacity: active ? 1 : 0.6 }}>{item.icon}</span>
+                <span style={{ fontSize: 8.5, fontWeight: active ? 700 : 500, letterSpacing: "0.02em", whiteSpace: "nowrap" }}>{item.label}</span>
+                {active && <div style={{ position: "absolute", top: 0, width: 24, height: 2, background: T.accent, borderRadius: 2 }} />}
+                {badge > 0 && (
+                  <span style={{ position: "absolute", top: 2, right: 10, background: item.id==="portfolio"?T.green:T.accent,
+                    color: item.id==="portfolio"?"#000":"#fff", borderRadius: 99, minWidth: 14, height: 14,
+                    display: "flex", alignItems: "center", justifyContent: "center", fontSize: 8, fontWeight: 700, padding: "0 3px" }}>
+                    {badge}
+                  </span>
+                )}
+              </div>
+            );
+          })}
+        </nav>
+      )}
 
       {/* TOASTS */}
       <div style={{ position: "fixed", bottom: 20, right: 20, display: "flex", flexDirection: "column", gap: 8, zIndex: 9999, maxWidth: 330 }}>
@@ -3233,13 +3376,19 @@ JSON puro:
         ))}
       </div>
 
-      {/* ── PAINEL SIMULAÇÃO FLUTUANTE (canto inferior esquerdo) ── */}
+      {/* ── PAINEL SIMULAÇÃO FLUTUANTE ── */}
       {simMode && (
         <div style={{
-          position: "fixed", bottom: 20, left: 212, zIndex: 1000,
-          background: "rgba(6,6,26,0.92)", backdropFilter: "blur(16px)",
+          position: "fixed",
+          bottom: isMobile ? 76 : 20,
+          left:   isMobile ? 8 : 212,
+          right:  isMobile ? 8 : "auto",
+          zIndex: 1000,
+          background: "rgba(6,6,26,0.96)", backdropFilter: "blur(16px)",
           border: `1px solid ${T.green}33`, borderRadius: 14,
-          padding: "14px 18px", minWidth: 320,
+          padding: "14px 18px",
+          minWidth: isMobile ? "auto" : 320,
+          maxWidth: isMobile ? "none" : 360,
           boxShadow: `0 0 32px rgba(16,185,129,0.1)`,
         }}>
           {/* Header painel */}
@@ -3333,7 +3482,7 @@ JSON puro:
         }}>
           <div style={{
             background: T.base, border: `1px solid ${simSummary.roi >= 0 ? T.green : T.red}44`,
-            borderRadius: 20, padding: "36px 40px", width: 560, maxHeight: "88vh", overflowY: "auto",
+            borderRadius: 20, padding: isMobile ? "24px 18px" : "36px 40px", width: isMobile ? "calc(100vw - 24px)" : 560, maxWidth: "calc(100vw - 24px)", maxHeight: "88vh", overflowY: "auto",
             boxShadow: `0 0 80px ${simSummary.roi >= 0 ? T.green : T.red}18`,
           }}>
             {/* Header */}
