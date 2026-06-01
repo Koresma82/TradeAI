@@ -966,7 +966,7 @@ JSON puro:
   const [aiProvider,    setAiProvider]    = useState("auto"); // "auto"|"claude"|"groq"
   const [marketSignals, setMarketSignals] = useState({});
   const [mktCatTab,     setMktCatTab]     = useState("Todos");
-  const [simMinimized,  setSimMinimized]  = useState(false);
+  const [simMinimized,  setSimMinimized]  = useState(true);  // começa minimizado
   const [dailyVolume,   setDailyVolume]   = useState({});
   const hoveredChart = useRef(null);
 
@@ -2449,7 +2449,7 @@ pm2 save && pm2 startup`}</CodeBlock>
       : Math.max(10, +(local.capitalTotal * local.percentagem / 100).toFixed(2));
 
     return (
-      <div style={{ display: "flex", flexDirection: "column", gap: 16, maxWidth: 820 }}>
+      <div style={{ display: "flex", flexDirection: "column", gap: 16, maxWidth: 820, paddingBottom: 80 }}>
 
         {/* Mode tabs */}
         <div style={{ display: "flex", gap: 0, background: "rgba(0,0,0,0.3)", borderRadius: 10, overflow: "hidden", width: "fit-content" }}>
