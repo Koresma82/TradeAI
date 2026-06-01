@@ -237,6 +237,7 @@ export default function TradeAI() {
   const [simStartedAt, setSimStartedAt] = useState(null); // timestamp início
   const simBalRef   = useRef(1000);
   const simPosRef   = useRef([]);
+  const simStartedRef = useRef(false); // true quando a simulação está em curso
 
   const [tab, setTab]             = useState("dashboard");
   const tabRef = useRef("dashboard");
@@ -314,6 +315,7 @@ export default function TradeAI() {
   }, [dtTrades, dtDailyPnl, user, dbLoaded]);
 
   useEffect(() => { simPosRef.current = simPositions; }, [simPositions]);
+  useEffect(() => { simStartedRef.current = !!simStartedAt; }, [simStartedAt]);
   useEffect(() => { stratRef.current = strategies; }, [strategies]);
   useEffect(() => { posRef.current = positions; }, [positions]);
   useEffect(() => { closedRef.current = closed; }, [closed]);
@@ -370,65 +372,100 @@ export default function TradeAI() {
         });
         setAssets(upd);
 
-        // 2. Check SL/TP on open positions
+        // ── Determina o modo ativo (SIM ou LIVE) e respetivos setters/refs ──
+        const isSim = simModeRef.current;
+        const posPool   = isSim ? simPosRef.current : posRef.current;
+        const curBal    = isSim ? simBalRef.current : balRef.current;
+        const setPos    = isSim ? setSimPositions : setPositions;
+        const setBal    = isSim ? setSimBalance   : setBalance;
+        const setClsd   = isSim ? setSimClosed    : setClosed;
+        const balRefCur = isSim ? simBalRef        : balRef;
+
+        // 2. Check SL/TP on open positions (modo ativo)
         const toClose = [], toKeep = [];
-        posRef.current.forEach(pos => {
+        posPool.forEach(pos => {
           const a = upd.find(x => x.id === pos.assetId);
           if (!a) { toKeep.push(pos); return; }
           if (a.price <= pos.sl) {
             const pnl = (pos.sl - pos.entryPrice) * pos.units;
             toClose.push({ ...pos, status: "SL", closePrice: pos.sl, closedAt: new Date().toLocaleTimeString("pt-PT"), pnl });
-            setBalance(b => { const n = +(b + pos.amount + pnl).toFixed(2); balRef.current = n; return n; });
+            setBal(b => { const n = +(b + pos.amount + pnl).toFixed(2); balRefCur.current = n; return n; });
             toast(`🛑 SL ${a.sym} — ${sign(pnl)}${eur(pnl)}`, "warn");
           } else if (a.price >= pos.tp) {
             const pnl = (pos.tp - pos.entryPrice) * pos.units;
             toClose.push({ ...pos, status: "TP", closePrice: pos.tp, closedAt: new Date().toLocaleTimeString("pt-PT"), pnl });
-            setBalance(b => { const n = +(b + pos.amount + pnl).toFixed(2); balRef.current = n; return n; });
+            setBal(b => { const n = +(b + pos.amount + pnl).toFixed(2); balRefCur.current = n; return n; });
             toast(`✅ TP ${a.sym} +${eur(pnl)}`, "success");
           } else {
             toKeep.push(pos);
           }
         });
         if (toClose.length) {
-          setClosed(p => [...toClose, ...p]);
-          setPositions(toKeep);
+          setClsd(p => [...toClose, ...p]);
+          setPos(toKeep);
+          if (isSim) simPosRef.current = toKeep;
+          // Trades de day trading fechados → refletir na lista do dia + P&L do dia
+          const dtClosed = toClose.filter(t => t.stratId === "daytrading");
+          if (dtClosed.length) {
+            setDtTrades(prev => prev.map(t => {
+              const m = dtClosed.find(c => c.id === t.id);
+              return m ? { ...t, status: m.status, closePrice: m.closePrice, pnl: m.pnl } : t;
+            }));
+            setDtDailyPnl(prev => +(prev + dtClosed.reduce((s, c) => s + (c.pnl || 0), 0)).toFixed(2));
+          }
           // Persistir no Firestore
           if (user) {
-            import("./firebase.js").then(({ updateTrade }) => {
+            import("./firebase.js").then(({ updateTrade, saveSetting }) => {
               toClose.forEach(t => updateTrade(user.uid, t.id, {
                 status: t.status, closePrice: t.closePrice, pnl: t.pnl, closedAt: t.closedAt,
               }).catch(() => {}));
+              saveSetting(user.uid, isSim ? "simBalance" : "liveBalance", balRefCur.current).catch(() => {});
             }).catch(() => {});
           }
         }
 
-        // 3. Strategy signals
-        stratRef.current.filter(s => s.ativo).forEach(s => {
-          s.ativos.forEach(aid => {
-            const key = `${s.id}_${aid}`;
-            if ((cds.current[key] || 0) > 0) { cds.current[key]--; return; }
-            const a = upd.find(x => x.id === aid);
-            if (!a) return;
-            const high     = highs.current[aid]?.p || a.price;
-            const dropPct  = ((high - a.price) / high) * 100;
-            if (dropPct >= s.compra && balRef.current >= s.perTrade) {
-              const units = +(s.perTrade / a.price).toFixed(7);
-              const sl    = +(a.price * (1 - s.sl / 100)).toFixed(a.id === "eurusd" ? 4 : 2);
-              const tp    = +(a.price * (1 + s.tp / 100)).toFixed(a.id === "eurusd" ? 4 : 2);
-              const pos   = {
-                id: uid(), assetId: a.id, assetName: a.name, assetSym: a.sym,
-                entryPrice: a.price, units, amount: s.perTrade,
-                strategy: s.nome, stratId: s.id, sl, tp,
-                openedAt: new Date().toLocaleTimeString("pt-PT"), status: "ABERTA",
-              };
-              setPositions(p => [...p, pos]);
-              setBalance(b => { const n = +(Math.max(0, b - s.perTrade)).toFixed(2); balRef.current = n; return n; });
-              setStrategies(p => p.map(x => x.id === s.id ? { ...x, trades: x.trades + 1 } : x));
-              cds.current[key] = 22;
-              toast(`📈 BUY ${a.sym} @$${a.price.toFixed(2)} · "${s.nome}"`, "buy");
-            }
+        // 3. Strategy signals — corre no modo ativo (SIM ou LIVE).
+        //    Em LIVE corre sempre. Em SIM corre se a simulação foi iniciada (Começar)
+        //    OU se o Auto-Investir está ativo (a IA investe sem precisares de carregar).
+        const autoOn = settingsRef.current?.autoInvestir;
+        const simRunning = isSim ? (!!simStartedRef.current || !!autoOn) : true;
+        if (simRunning) {
+          const maxStrat = settingsRef.current?.maxEstrategias ?? 5;
+          const stratOpen = (isSim ? simPosRef.current : posRef.current)
+            .filter(p => p.stratId && p.stratId !== "manual" && p.stratId !== "daytrading").length;
+          let openedThisTick = 0;
+          stratRef.current.filter(s => s.ativo).forEach(s => {
+            s.ativos.forEach(aid => {
+              const key = `${s.id}_${aid}`;
+              if ((cds.current[key] || 0) > 0) { cds.current[key]--; return; }
+              const a = upd.find(x => x.id === aid);
+              if (!a) return;
+              if (stratOpen + openedThisTick >= maxStrat) return; // limite atingido
+              const high     = highs.current[aid]?.p || a.price;
+              const dropPct  = ((high - a.price) / high) * 100;
+              const balNow   = balRefCur.current;
+              if (dropPct >= s.compra && balNow >= s.perTrade) {
+                const units = +(s.perTrade / a.price).toFixed(7);
+                const sl    = +(a.price * (1 - s.sl / 100)).toFixed(a.id === "eurusd" ? 4 : 2);
+                const tp    = +(a.price * (1 + s.tp / 100)).toFixed(a.id === "eurusd" ? 4 : 2);
+                const pos   = {
+                  id: uid(), assetId: a.id, assetName: a.name, assetSym: a.sym,
+                  entryPrice: a.price, units, amount: s.perTrade,
+                  strategy: s.nome, stratId: s.id, sl, tp,
+                  openedAt: new Date().toLocaleTimeString("pt-PT"), status: "ABERTA",
+                  mode: isSim ? "sim" : "live",
+                };
+                setPos(p => { const next = [...p, pos]; if (isSim) simPosRef.current = next; return next; });
+                setBal(b => { const n = +(Math.max(0, b - s.perTrade)).toFixed(2); balRefCur.current = n; return n; });
+                setStrategies(p => p.map(x => x.id === s.id ? { ...x, trades: x.trades + 1 } : x));
+                cds.current[key] = 22;
+                openedThisTick++;
+                if (user) import("./firebase.js").then(({ saveTrade }) => saveTrade(user.uid, pos).catch(()=>{})).catch(()=>{});
+                toast(`📈 ${isSim ? "[SIM] " : ""}BUY ${a.sym} @$${a.price.toFixed(2)} · "${s.nome}"`, "buy");
+              }
+            });
           });
-        });
+        }
 
         return t;
       });
@@ -449,6 +486,12 @@ export default function TradeAI() {
   const totalPnl    = unrealized + realized;
   const portfolioV  = activeBalance + invested + unrealized;
   const winRate     = activeClosed.length ? (activeClosed.filter(p => p.pnl > 0).length / activeClosed.length) * 100 : null;
+
+  // Conjunto de ativos onde tens posição aberta (modo ativo) — usado para validar sinais VENDER
+  const heldAssetIds = new Set(activePositions.map(p => p.assetId));
+  // VENDER só faz sentido se tiveres o ativo; caso contrário mostra AGUARDAR
+  const normSignal = (assetId, sinal) =>
+    sinal === "VENDER" && !heldAssetIds.has(assetId) ? "AGUARDAR" : sinal;
 
   // ── AI: Create strategy ──
   const createStrategy = async () => {
@@ -1606,8 +1649,9 @@ JSON: {"signals":[{"id":"btc","sinal":"COMPRAR|VENDER|AGUARDAR","razao":"1 frase
                           : <span style={{ fontSize: 9, color: T.gold }}>◎ SIM</span>}
                         {marketSignals[a.id] && (() => {
                           const sig = marketSignals[a.id];
-                          const sc2 = sig.sinal==="COMPRAR"?T.green:sig.sinal==="VENDER"?T.red:T.gold;
-                          return <span title={sig.razao||""} style={{ background:`${sc2}18`, color:sc2, border:`1px solid ${sc2}33`, borderRadius:99, padding:"1px 8px", fontSize:9, fontWeight:700, cursor:"help" }}>◆ {sig.sinal}</span>;
+                          const sinalShow = normSignal(a.id, sig.sinal);
+                          const sc2 = sinalShow==="COMPRAR"?T.green:sinalShow==="VENDER"?T.red:T.gold;
+                          return <span title={sig.razao||""} style={{ background:`${sc2}18`, color:sc2, border:`1px solid ${sc2}33`, borderRadius:99, padding:"1px 8px", fontSize:9, fontWeight:700, cursor:"help" }}>◆ {sinalShow}</span>;
                         })()}
                       </div>
                       {marketSignals[a.id]?.previsao && (
@@ -1787,16 +1831,20 @@ JSON: {"signals":[{"id":"btc","sinal":"COMPRAR|VENDER|AGUARDAR","razao":"1 frase
               </div>
 
               {/* AI signal se disponível */}
-              {sig && (
+              {sig && (() => {
+                const sinalShow = normSignal(orderModal.assetId, sig.sinal);
+                const sigCol = sinalShow==="COMPRAR"?T.green:sinalShow==="VENDER"?T.red:T.gold;
+                return (
                 <div style={{ margin:"12px 0", padding:"10px 14px", borderRadius:9,
-                  background: `${sig.sinal==="COMPRAR"?T.green:sig.sinal==="VENDER"?T.red:T.gold}10`,
-                  border: `1px solid ${sig.sinal==="COMPRAR"?T.green:sig.sinal==="VENDER"?T.red:T.gold}30`,
+                  background: `${sigCol}10`,
+                  border: `1px solid ${sigCol}30`,
                   fontSize:11, color:T.muted, lineHeight:1.6 }}>
-                  <b style={{ color: sig.sinal==="COMPRAR"?T.green:sig.sinal==="VENDER"?T.red:T.gold }}>◆ AI: {sig.sinal}</b>
+                  <b style={{ color: sigCol }}>◆ AI: {sinalShow}</b>
                   {" · "}{sig.razao}
                   {sig.previsao && <div style={{marginTop:3, fontStyle:"italic"}}>{sig.previsao}</div>}
                 </div>
-              )}
+                );
+              })()}
 
               {/* Valor editável */}
               <div style={{ background:`${col}08`, border:`1px solid ${col}22`, borderRadius:12, padding:"16px", marginBottom:16 }}>
@@ -1909,7 +1957,8 @@ JSON: {"signals":[{"id":"btc","sinal":"COMPRAR|VENDER|AGUARDAR","razao":"1 frase
             {topMovers.map((a, i) => {
               const col2 = a.change>=0 ? T.green : T.red;
               const sig  = marketSignals[a.id];
-              const sigC = sig?.sinal==="COMPRAR"?T.green:sig?.sinal==="VENDER"?T.red:T.gold;
+              const sinalShow = sig ? normSignal(a.id, sig.sinal) : null;
+              const sigC = sinalShow==="COMPRAR"?T.green:sinalShow==="VENDER"?T.red:T.gold;
               return (
               <div key={a.id} style={{
                 background: `${col2}0a`, border: `1px solid ${col2}22`,
@@ -1925,7 +1974,7 @@ JSON: {"signals":[{"id":"btc","sinal":"COMPRAR|VENDER|AGUARDAR","razao":"1 frase
                   </div>
                   <div style={{ display:"flex", flexDirection:"column", alignItems:"flex-end", gap:3 }}>
                     {i<3 && <span style={{ fontSize:9, color:T.gold }}>{["👑","🥈","🥉"][i]}</span>}
-                    {sig && <span style={{ background:`${sigC}18`, color:sigC, border:`1px solid ${sigC}33`, borderRadius:99, padding:"1px 6px", fontSize:8, fontWeight:700 }}>{sig.sinal}</span>}
+                    {sig && <span style={{ background:`${sigC}18`, color:sigC, border:`1px solid ${sigC}33`, borderRadius:99, padding:"1px 6px", fontSize:8, fontWeight:700 }}>{sinalShow}</span>}
                   </div>
                 </div>
                 <div style={{ fontWeight:800, fontSize:18, color: col2, marginBottom:2 }}>
@@ -2783,7 +2832,7 @@ pm2 save && pm2 startup`}</CodeBlock>
           <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 16 }}>
             <div style={{ background: `${T.accent}0a`, border: `1px solid ${T.accent}22`, borderRadius: 10, padding: "14px 16px" }}>
               <div style={{ fontSize: 11, fontWeight: 600, marginBottom: 4 }}>Auto-Investir com AI</div>
-              <div style={{ fontSize: 10, color: T.muted, marginBottom: 12, lineHeight: 1.5 }}>A IA investe automaticamente sem precisares de carregar em "Investir".</div>
+              <div style={{ fontSize: 10, color: T.muted, marginBottom: 12, lineHeight: 1.5 }}>As tuas estratégias ativas operam sozinhas, mesmo sem carregares em "Começar" na simulação.</div>
               <div onClick={() => upd("autoInvestir", !local.autoInvestir)} style={{ display: "flex", alignItems: "center", gap: 10, cursor: "pointer" }}>
                 <div style={{ width: 44, height: 24, borderRadius: 12, background: local.autoInvestir ? T.green : "rgba(255,255,255,0.1)", position: "relative", transition: "all 0.2s" }}>
                   <div style={{ position: "absolute", top: 3, left: local.autoInvestir ? 22 : 2, width: 18, height: 18, borderRadius: "50%", background: "#fff", transition: "left 0.2s" }} />
@@ -2887,7 +2936,18 @@ pm2 save && pm2 startup`}</CodeBlock>
       if (dtLoading) return;
       setDtLoading(true);
       try {
-        const watchlist = dtAssets.length > 0 ? dtAssets : assets.filter(a => a.trade);
+        // Watchlist: ativos escolhidos pelo user, OU (por defeito) os tradeable +
+        // os mais voláteis do dia, até 12, para a IA ter material para 6+ oportunidades.
+        let watchlist;
+        if (dtAssets.length > 0) {
+          watchlist = dtAssets;
+        } else {
+          const tradeables = assets.filter(a => a.trade);
+          const volateis = [...assets]
+            .sort((a, b) => Math.abs(b.change) - Math.abs(a.change))
+            .filter(a => !tradeables.some(t => t.id === a.id));
+          watchlist = [...tradeables, ...volateis].slice(0, 12);
+        }
         const lines = watchlist.map(a => {
           const live = mktData[a.id] || {};
           const p    = live.price ?? a.price;
@@ -2924,7 +2984,7 @@ Com base no momento atual (hora do dia, volatilidade, tendência), diz-me:
 2. Se devo COMPRAR ou VENDER AGORA (não amanhã, HOJE)
 3. Previsão concreta: "prevejo subida de X% nas próximas Y horas"
 
-Sê direto — não dizes "pode subir", dizes "vai subir X% até às HH:MM" ou "não invistas agora".
+Devolve entre 4 e 6 oportunidades no array (as melhores dos ativos acima). Sê direto — não dizes "pode subir", dizes "vai subir X% até às HH:MM" ou "não invistas agora".
 
 JSON puro:
 {
@@ -3011,7 +3071,7 @@ JSON puro:
       setDtTrades(p => p.map(t => {
         if (t.id !== tradeId || t.status !== "ABERTA") return t;
         const a    = assets.find(x => x.id === t.assetId);
-        const price = mktData[t.assetId]?.price || a?.price || t.entryPrice;
+        const price = a?.price || mktData[t.assetId]?.price || t.entryPrice;
         const pnl  = (price - t.entryPrice) * t.units;
         setDtDailyPnl(prev => +(prev + pnl).toFixed(2));
         // Fechar na posições
@@ -3265,7 +3325,7 @@ JSON puro:
             <div style={{ display:"flex", flexDirection:"column", gap:8 }}>
               {dtTrades.map(t => {
                 const a     = assets.find(x => x.id === t.assetId);
-                const price = mktData[t.assetId]?.price || a?.price || t.entryPrice;
+                const price = a?.price || mktData[t.assetId]?.price || t.entryPrice;
                 const curPnl = t.status==="ABERTA"
                   ? (price - t.entryPrice) * t.units
                   : (t.pnl || 0);
@@ -3773,7 +3833,12 @@ JSON puro:
                     ■ Terminar
                   </button>
                 ) : (
-                  <button onClick={() => { setSimStartedAt(new Date()); toast("◎ Simulação iniciada! O bot vai começar a operar.", "success"); }}
+                  <button onClick={() => {
+                    setSimStartedAt(new Date());
+                    const nAtivas = strategies.filter(s => s.ativo).length;
+                    if (nAtivas > 0) toast(`◎ Simulação iniciada! ${nAtivas} estratégia(s) ativa(s) vão operar.`, "success");
+                    else toast("◎ Simulação iniciada! Cria/ativa estratégias ou compra manualmente.", "info");
+                  }}
                     style={{ background:`${T.green}18`, border:`1px solid ${T.green}33`, borderRadius:6, padding:"3px 10px", fontSize:10, color:T.green, cursor:"pointer", fontFamily:"inherit", fontWeight:700 }}>
                     ▶ Começar
                   </button>
