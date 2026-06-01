@@ -787,7 +787,7 @@ JSON puro:
             <div style={{ fontSize: 13, color: T.text }}>{aiSuggestions.resumo}</div>
           </div>
           {/* Header tabela */}
-          <div style={{ display: "grid", gridTemplateColumns: "2fr 1fr 1fr 1fr 1fr 1fr 1fr 140px", minWidth: isMobile ? 720 : "auto", gap: 0, padding: "10px 22px", borderBottom: `1px solid ${T.border}`, minWidth: isMobile ? 720 : "auto" }}>
+          <div style={{ display: "grid", gridTemplateColumns: "2fr 1fr 1fr 1fr 1fr 1fr 1fr 140px", minWidth: isMobile ? 720 : "auto", gap: 0, padding: "10px 22px", borderBottom: `1px solid ${T.border}` }}>
             {["Ativo","Sinal","Porquê","Confiança","Risco","Retorno Esp.","Prazo",""].map(h => (
               <div key={h} style={{ fontSize: 9, color: T.muted, letterSpacing: "0.12em", textTransform: "uppercase", fontWeight: 600 }}>{h}</div>
             ))}
@@ -964,6 +964,9 @@ JSON puro:
   const [orderAmount,   setOrderAmount]   = useState(100);
   const [aiCost,        setAiCost]        = useState(0);
   const [aiProvider,    setAiProvider]    = useState("auto"); // "auto"|"claude"|"groq"
+  const [defTab,        setDefTab]        = useState("sim");  // settings sub-tab (top-level p/ sobreviver re-render)
+  const [brokerTab,     setBrokerTab]     = useState("alpaca"); // guia: corretora
+  const [settingsLocal, setSettingsLocal] = useState(null);   // edição settings (top-level)
   const [marketSignals, setMarketSignals] = useState({});
   const [mktCatTab,     setMktCatTab]     = useState("Todos");
   const [simMinimized,  setSimMinimized]  = useState(true);  // começa minimizado
@@ -2088,7 +2091,6 @@ JSON: {"signals":[{"id":"btc","sinal":"COMPRAR|VENDER|AGUARDAR","razao":"1 frase
   // RENDER: GUIA
   // ─────────────────────────────────────────────
   const Guide = () => {
-    const [brokerTab, setBrokerTab] = useState("alpaca"); // "alpaca" | "ibkr"
     const Row = ({ k, v, c }) => (
       <div style={{ display:"flex", gap:14, padding:"7px 0", borderBottom:`1px solid ${T.border}44`, fontSize:12 }}>
         <span style={{ color: c || T.accent, fontWeight:700, minWidth:130, flexShrink:0 }}>{k}</span>
@@ -2423,20 +2425,25 @@ pm2 save && pm2 startup`}</CodeBlock>
   // RENDER: DEFINIÇÕES
   // ─────────────────────────────────────────────
   const Settings = () => {
-    const [defTab, setDefTab]   = useState("sim");
     const isSimTab = defTab === "sim";
     const currentSettings      = isSimTab ? settings : liveSettings;
     const setCurrentSettings   = isSimTab ? setSettings : setLiveSettings;
-    const [local, setLocal]    = useState({ ...currentSettings });
+    // local edit state vive no top-level (settingsLocal) para sobreviver ao re-render de 2s
+    const local = settingsLocal || { ...currentSettings };
+    const setLocal = (updater) => {
+      setSettingsLocal(prev => {
+        const base = prev || { ...currentSettings };
+        return typeof updater === "function" ? updater(base) : updater;
+      });
+    };
 
-    // When switching tab, reload local from correct settings
     const switchTab = (tab) => {
       setDefTab(tab);
-      setLocal({ ...(tab === "sim" ? settings : liveSettings) });
+      setSettingsLocal({ ...(tab === "sim" ? settings : liveSettings) });
     };
 
     const upd  = (k, v) => setLocal(p => ({ ...p, [k]: v }));
-    const save = () => { setCurrentSettings(local); toast(`✅ Definições ${isSimTab?"simulação":"live"} guardadas!`, "success"); };
+    const save = () => { setCurrentSettings(local); setSettingsLocal(null); toast(`✅ Definições ${isSimTab?"simulação":"live"} guardadas!`, "success"); };
 
     const perfilInfo = {
       conservador: { desc: "Quedas maiores para acionar compra, SL/TP mais apertados. Menos trades, mais seguros.", sl: 4, tp: 8,  compra: 2.5 },
@@ -2615,7 +2622,7 @@ pm2 save && pm2 startup`}</CodeBlock>
             padding: "10px 18px", fontSize: 12, color: T.red, cursor: "pointer", fontFamily: "inherit", fontWeight: 700,
           }}>🗑 Limpar Simulações</button>
           <div style={{ display: "flex", gap: 10 }}>
-            <Btn color={T.muted} onClick={() => setLocal({ ...currentSettings })}>Cancelar</Btn>
+            <Btn color={T.muted} onClick={() => setSettingsLocal(null)}>Cancelar</Btn>
             <Btn color={T.green} solid onClick={save} style={{ padding: "11px 32px", fontSize: 14 }}>✓ Guardar</Btn>
           </div>
         </div>
@@ -3086,28 +3093,25 @@ JSON puro:
     if (!user) return;
     const uid2 = user.uid;
     // Carregar posições simuladas abertas
-    import("./firebase.js").then(({ subscribeTrades, subscribeBalance: subBal }) => {
-      const unsubTrades = subscribeTrades(uid2, (trades) => {
-        if (!dbLoaded) {
-          const open   = trades.filter(t => t.status === "ABERTA" && t.mode === "sim");
-          const closed_ = trades.filter(t => t.status !== "ABERTA" && t.mode === "sim");
-          setSimPositions(open);
-          simPosRef.current = open;
-          setSimClosed(closed_);
-          // Recalcular saldo
-          const spent = open.reduce((s, p) => s + (p.amount || 0), 0);
-          const earnedBack = closed_.reduce((s, t) => s + (t.amount || 0) + (t.pnl || 0), 0);
-          setDbLoaded(true);
-        }
+    let unsubTrades = null, unsubBal = null;
+    import("./firebase.js").then(({ subscribeTrades, subscribeSetting }) => {
+      unsubTrades = subscribeTrades(uid2, (trades) => {
+        // Carregar trades do bot/servidor — sincroniza posições abertas SIM
+        const open    = trades.filter(t => t.status === "ABERTA" && t.mode === "sim");
+        const closed_ = trades.filter(t => t.status !== "ABERTA" && t.mode === "sim");
+        setSimPositions(open);
+        simPosRef.current = open;
+        setSimClosed(closed_);
+        setDbLoaded(true);
       });
-      const unsubBal = subBal(uid2, "simBalance", (val) => {
-        if (val && !dbLoaded) {
+      unsubBal = subscribeSetting(uid2, "simBalance", (val) => {
+        if (typeof val === "number" && val > 0) {
           setSimBalance(val);
           simBalRef.current = val;
         }
       });
-      return () => { unsubTrades(); unsubBal(); };
     }).catch(() => {});
+    return () => { unsubTrades?.(); unsubBal?.(); };
   }, [user]);
 
   // ── Persistência: guardar trade quando aberto ─────────────────────────────
@@ -3193,24 +3197,24 @@ JSON puro:
         <div className="resp-header-info" style={{ display: "flex", alignItems: "center", gap: 18, fontSize: 12 }}>
           {/* ── TOGGLE SIMULAÇÃO / LIVE ── */}
           <div
-            onClick={() => {
+            onClick={(e) => {
+              e.stopPropagation();
               if (simMode) {
-                if (window.confirm(
+                const ok = window.confirm(
                   "⚠️ ATENÇÃO — Modo LIVE\n\n" +
-                  "Em modo LIVE os trades serão executados com dinheiro REAL no IBKR.\n\n" +
-                  "Confirmas que tens o TWS aberto e a conta configurada?\n\n" +
+                  "Em modo LIVE os trades serão executados com dinheiro REAL.\n\n" +
+                  "Confirmas que tens a corretora (Alpaca/IBKR) configurada?\n\n" +
                   "(Podes voltar a Simulação a qualquer momento)"
-                )) { setSimMode(false); }
+                );
+                if (ok) {
+                  setSimMode(false);
+                  simModeRef.current = false;
+                  toast("● Modo LIVE ativado — dinheiro real", "warn");
+                }
               } else {
                 setSimMode(true);
-                // Reinicia simulação com capital configurado
-                setSimBalance(simCapital);
-                simBalRef.current = simCapital;
-                setSimPositions([]);
-                simPosRef.current = [];
-                setSimClosed([]);
-                setSimStartedAt(new Date());
-                toast("◎ Nova simulação iniciada com €" + simCapital, "success");
+                simModeRef.current = true;
+                toast("◎ Modo Simulação ativado", "success");
               }
             }}
             style={{
