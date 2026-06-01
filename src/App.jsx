@@ -254,7 +254,7 @@ export default function TradeAI() {
   const [suggestLoading, setSuggestLoading] = useState(false);
   const [toasts, setToasts]         = useState([]);
   const [confirmModal, setConfirmModal] = useState(null); // { title, message, lines, danger, confirmLabel, onConfirm }
-  const [suggestFilter, setSuggestFilter] = useState("Tudo (diversificado)"); // filtro selecionado para sugestões
+  const [suggestCats, setSuggestCats] = useState([]); // categorias selecionadas ([] = todas)
   const [tick, setTick]             = useState(0);
   const [liveData, setLiveData]     = useState(false);
 
@@ -790,25 +790,23 @@ JSON puro — inclui TODOS os ativos relevantes de TODAS as categorias:
   const getSuggestions = async () => {
     setSuggestLoading(true);
     try {
-      // Filtrar ativos conforme o filtro selecionado
-      const filterMap = {
-        "Cripto hoje": ["Crypto"],
-        "Commodities": ["Commodity"],
-        "ETFs conservador": ["ETF"],
-        "Tudo (diversificado)": ["Crypto","Commodity","ETF","Forex"],
-      };
-      const allowedCats = filterMap[suggestFilter] || ["Crypto","Commodity","ETF","Forex"];
+      // Categorias selecionadas ([] = todas)
+      const allowedCats = suggestCats.length > 0 ? suggestCats : ["Crypto","Commodity","ETF","Forex"];
       const filteredAssets = assets.filter(a => allowedCats.includes(a.cat));
       const lines = filteredAssets.map(a => `${a.name}(${a.sym}):$${fmt(a.price,a.id)}(${pctFmt(a.change)})`).join(", ");
       const s     = settingsRef.current;
       const amount = calcTradeAmount();
+      const nCats = allowedCats.length;
       const { result, cost: c1 } = await callAI({
-        max_tokens: 1200,
+        max_tokens: 2200,
         system: "És um trader profissional. Analisa mercados e dá oportunidades concretas. Responde SEMPRE com JSON puro, sem markdown.",
         messages: [{ role: "user", content:
 `Analisa estes mercados AGORA e diz as melhores oportunidades para hoje.
 Perfil: ${s.riscoPerfil} | €${amount}/trade | SL ${s.stopLossPadrao}% | TP ${s.takeProfitPadrao}%
+Categorias a analisar: ${allowedCats.join(", ")}
 Preços: ${lines}
+
+Dá ${nCats === 1 ? "6 oportunidades" : "as melhores oportunidades (até 6 por categoria)"} dos ativos listados acima. Inclui só ativos das categorias pedidas.
 JSON puro:
 {"resumo":"análise 1 frase pt","momento":"BOM|NEUTRO|MAU","oportunidades":[{"id":"xag","nome":"Prata","icone":"🥈","sinal":"COMPRAR|AGUARDAR","porque":"razão simples 1-2 frases pt","confianca":82,"risco":"BAIXO|MÉDIO|ALTO","entrada":30.5,"sl":28.6,"tp":34.2,"retornoEsperado":12.1,"prazo":"3-7 dias"}]}` }],
       });
@@ -936,17 +934,23 @@ JSON puro:
           <div style={{ color: T.muted, fontSize: 13, marginBottom: 20 }}>
             Clica em <b style={{ color: T.aLight }}>Analisar Agora</b> para a IA te dizer o que investir hoje.
           </div>
+          <div style={{ fontSize: 11, color: T.muted, marginBottom: 8 }}>Seleciona uma ou mais categorias (nenhuma = todas):</div>
           <div style={{ display: "flex", gap: 10, justifyContent: "center", flexWrap: "wrap", marginBottom: 16 }}>
-            {["Cripto hoje", "Commodities", "ETFs conservador", "Tudo (diversificado)"].map(s => {
-              const sel = suggestFilter === s;
+            {[
+              ["Crypto", "💰 Cripto"],
+              ["Commodity", "🥇 Metais/Petróleo"],
+              ["ETF", "📈 ETFs"],
+              ["Forex", "💱 Forex"],
+            ].map(([cat, label]) => {
+              const sel = suggestCats.includes(cat);
               return (
-                <button key={s} onClick={() => setSuggestFilter(s)} style={{
+                <button key={cat} onClick={() => setSuggestCats(prev => sel ? prev.filter(c => c !== cat) : [...prev, cat])} style={{
                   background: sel ? `${T.accent}28` : `${T.accent}10`,
                   border: `1px solid ${sel ? T.accent+"88" : T.accent+"25"}`,
                   borderRadius: 99, padding: "7px 18px", fontSize: 11,
                   color: sel ? T.aLight : T.muted, fontWeight: sel ? 700 : 500,
                   cursor: "pointer", fontFamily: "inherit",
-                }}>{sel ? "✓ " : ""}{s}</button>
+                }}>{sel ? "✓ " : ""}{label}</button>
               );
             })}
           </div>
@@ -955,7 +959,7 @@ JSON puro:
             padding: "12px 32px", fontSize: 13, color: "#04140d", fontWeight: 800,
             cursor: suggestLoading ? "default" : "pointer", fontFamily: "inherit",
             opacity: suggestLoading ? 0.6 : 1,
-          }}>{suggestLoading ? "◌ A analisar…" : `◆ Analisar — ${suggestFilter}`}</button>
+          }}>{suggestLoading ? "◌ A analisar…" : `◆ Analisar ${suggestCats.length > 0 ? suggestCats.length + " categoria(s)" : "tudo"}`}</button>
         </Glass>
       )}
 
@@ -3746,10 +3750,20 @@ JSON puro:
                 style={{ background:"rgba(255,255,255,0.06)", border:`1px solid ${T.border}`, borderRadius:6, padding:"3px 8px", fontSize:10, color:T.muted, cursor:"pointer", fontFamily:"inherit" }}>
                 {simMinimized ? "▲" : "▼"}
               </button>
-              <button onClick={finishSim}
-                style={{ background:`${T.red}18`, border:`1px solid ${T.red}33`, borderRadius:6, padding:"3px 10px", fontSize:10, color:T.red, cursor:"pointer", fontFamily:"inherit", fontWeight:700 }}>
-                ■ Terminar
-              </button>
+              {(() => {
+                const simAtiva = simPositions.length > 0 || simClosed.length > 0;
+                return simAtiva ? (
+                  <button onClick={finishSim}
+                    style={{ background:`${T.red}18`, border:`1px solid ${T.red}33`, borderRadius:6, padding:"3px 10px", fontSize:10, color:T.red, cursor:"pointer", fontFamily:"inherit", fontWeight:700 }}>
+                    ■ Terminar
+                  </button>
+                ) : (
+                  <button onClick={() => { setSimStartedAt(new Date()); toast("◎ Simulação iniciada! O bot vai começar a operar.", "success"); }}
+                    style={{ background:`${T.green}18`, border:`1px solid ${T.green}33`, borderRadius:6, padding:"3px 10px", fontSize:10, color:T.green, cursor:"pointer", fontFamily:"inherit", fontWeight:700 }}>
+                    ▶ Começar
+                  </button>
+                );
+              })()}
             </div>
           </div>
           {!simMinimized && <div>
