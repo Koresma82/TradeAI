@@ -254,6 +254,7 @@ export default function TradeAI() {
   const [suggestLoading, setSuggestLoading] = useState(false);
   const [toasts, setToasts]         = useState([]);
   const [confirmModal, setConfirmModal] = useState(null); // { title, message, lines, danger, confirmLabel, onConfirm }
+  const [suggestFilter, setSuggestFilter] = useState("Tudo (diversificado)"); // filtro selecionado para sugestões
   const [tick, setTick]             = useState(0);
   const [liveData, setLiveData]     = useState(false);
 
@@ -789,7 +790,16 @@ JSON puro — inclui TODOS os ativos relevantes de TODAS as categorias:
   const getSuggestions = async () => {
     setSuggestLoading(true);
     try {
-      const lines = assets.map(a => `${a.name}(${a.sym}):$${fmt(a.price,a.id)}(${pctFmt(a.change)})`).join(", ");
+      // Filtrar ativos conforme o filtro selecionado
+      const filterMap = {
+        "Cripto hoje": ["Crypto"],
+        "Commodities": ["Commodity"],
+        "ETFs conservador": ["ETF"],
+        "Tudo (diversificado)": ["Crypto","Commodity","ETF","Forex"],
+      };
+      const allowedCats = filterMap[suggestFilter] || ["Crypto","Commodity","ETF","Forex"];
+      const filteredAssets = assets.filter(a => allowedCats.includes(a.cat));
+      const lines = filteredAssets.map(a => `${a.name}(${a.sym}):$${fmt(a.price,a.id)}(${pctFmt(a.change)})`).join(", ");
       const s     = settingsRef.current;
       const amount = calcTradeAmount();
       const { result, cost: c1 } = await callAI({
@@ -926,15 +936,26 @@ JSON puro:
           <div style={{ color: T.muted, fontSize: 13, marginBottom: 20 }}>
             Clica em <b style={{ color: T.aLight }}>Analisar Agora</b> para a IA te dizer o que investir hoje.
           </div>
-          <div style={{ display: "flex", gap: 10, justifyContent: "center", flexWrap: "wrap" }}>
-            {["Cripto hoje", "Commodities", "ETFs conservador", "Tudo (diversificado)"].map(s => (
-              <button key={s} onClick={getSuggestions} style={{
-                background: `${T.accent}12`, border: `1px solid ${T.accent}30`,
-                borderRadius: 99, padding: "6px 16px", fontSize: 11, color: T.aLight,
-                cursor: "pointer", fontFamily: "inherit",
-              }}>{s}</button>
-            ))}
+          <div style={{ display: "flex", gap: 10, justifyContent: "center", flexWrap: "wrap", marginBottom: 16 }}>
+            {["Cripto hoje", "Commodities", "ETFs conservador", "Tudo (diversificado)"].map(s => {
+              const sel = suggestFilter === s;
+              return (
+                <button key={s} onClick={() => setSuggestFilter(s)} style={{
+                  background: sel ? `${T.accent}28` : `${T.accent}10`,
+                  border: `1px solid ${sel ? T.accent+"88" : T.accent+"25"}`,
+                  borderRadius: 99, padding: "7px 18px", fontSize: 11,
+                  color: sel ? T.aLight : T.muted, fontWeight: sel ? 700 : 500,
+                  cursor: "pointer", fontFamily: "inherit",
+                }}>{sel ? "✓ " : ""}{s}</button>
+              );
+            })}
           </div>
+          <button onClick={getSuggestions} disabled={suggestLoading} style={{
+            background: T.green, border: "none", borderRadius: 10,
+            padding: "12px 32px", fontSize: 13, color: "#04140d", fontWeight: 800,
+            cursor: suggestLoading ? "default" : "pointer", fontFamily: "inherit",
+            opacity: suggestLoading ? 0.6 : 1,
+          }}>{suggestLoading ? "◌ A analisar…" : `◆ Analisar — ${suggestFilter}`}</button>
         </Glass>
       )}
 
@@ -2803,19 +2824,25 @@ pm2 save && pm2 startup`}</CodeBlock>
             icon: "🗑",
             title: "Apagar todas as simulações?",
             message: "Vais apagar todo o histórico e posições simuladas e reiniciar com o capital configurado.",
-            lines: ["Esta ação é irreversível", "As posições abertas serão fechadas", "O saldo volta ao capital inicial"],
+            lines: ["Esta ação é irreversível", "As posições abertas serão fechadas", "As estratégias ativas serão apagadas", "O saldo volta ao capital inicial"],
             confirmLabel: "Sim, apagar tudo",
             onConfirm: () => {
               setArchivedSims([]);
-              if (user) import("./firebase.js").then(({ saveSetting }) =>
-                saveSetting(user.uid, "archivedSims", []).catch(()=>{}));
               setSimClosed([]);
               setSimPositions([]);
               simPosRef.current = [];
               setSimBalance(simCapital);
               simBalRef.current = simCapital;
               setSimStartedAt(new Date());
-              toast("🗑 Simulações apagadas e reiniciadas!", "success");
+              // Apagar estratégias (estado + Firestore) para o bot parar de operar
+              const toDelete = strategies.map(s => s.id);
+              setStrategies([]);
+              stratRef.current = [];
+              if (user) import("./firebase.js").then(({ saveSetting, deleteStrategy }) => {
+                saveSetting(user.uid, "archivedSims", []).catch(()=>{});
+                toDelete.forEach(id => deleteStrategy(user.uid, id).catch(()=>{}));
+              });
+              toast("🗑 Simulações e estratégias apagadas!", "success");
             },
           })} style={{
             background: `${T.red}12`, border: `1px solid ${T.red}33`, borderRadius: 8,
@@ -3837,8 +3864,15 @@ JSON puro:
           <div style={{
             background: T.base, border: `1px solid ${simSummary.roi >= 0 ? T.green : T.red}44`,
             borderRadius: 20, padding: isMobile ? "24px 18px" : "36px 40px", width: isMobile ? "calc(100vw - 24px)" : 560, maxWidth: "calc(100vw - 24px)", maxHeight: "88vh", overflowY: "auto",
-            boxShadow: `0 0 80px ${simSummary.roi >= 0 ? T.green : T.red}18`,
+            boxShadow: `0 0 80px ${simSummary.roi >= 0 ? T.green : T.red}18`, position: "relative",
           }}>
+            {/* Botão fechar */}
+            <button onClick={() => setSimSummary(null)} style={{
+              position: "absolute", top: 16, right: 16, width: 32, height: 32,
+              background: "rgba(255,255,255,0.06)", border: `1px solid ${T.border}`,
+              borderRadius: 8, color: T.muted, cursor: "pointer", fontSize: 16,
+              fontFamily: "inherit", display: "flex", alignItems: "center", justifyContent: "center",
+            }}>✕</button>
             {/* Header */}
             <div style={{ textAlign: "center", marginBottom: 28 }}>
               <div style={{ fontSize: 48, marginBottom: 10 }}>{simSummary.roi >= 0 ? "🏆" : "📉"}</div>
@@ -3939,6 +3973,12 @@ setConfirmModal({
                 cursor: "pointer", fontFamily: "inherit", fontWeight: 700,
               }}>● Passar para LIVE</button>
             </div>
+            {/* Fechar sem ação */}
+            <button onClick={() => setSimSummary(null)} style={{
+              width: "100%", marginTop: 10, background: "transparent",
+              border: `1px solid ${T.border}`, borderRadius: 10, padding: "11px",
+              fontSize: 12, color: T.muted, cursor: "pointer", fontFamily: "inherit", fontWeight: 600,
+            }}>Fechar (continuar depois)</button>
           </div>
         </div>
       )}
