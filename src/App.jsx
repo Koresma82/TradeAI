@@ -295,6 +295,15 @@ export default function TradeAI() {
   useEffect(() => { simModeRef.current = simMode; }, [simMode]);
   useEffect(() => { simBalRef.current = simBalance; }, [simBalance]);
   useEffect(() => { liveSettingsRef.current = liveSettings; }, [liveSettings]);
+  // Persistir day trading trades + P&L (com debounce simples)
+  useEffect(() => {
+    if (!user || !dbLoaded) return;
+    const t = setTimeout(() => {
+      import("./firebase.js").then(({ saveSetting }) =>
+        saveSetting(user.uid, "dtState", { trades: dtTrades, dailyPnl: dtDailyPnl }).catch(()=>{}));
+    }, 1000);
+    return () => clearTimeout(t);
+  }, [dtTrades, dtDailyPnl, user, dbLoaded]);
 
   useEffect(() => { simPosRef.current = simPositions; }, [simPositions]);
   useEffect(() => { stratRef.current = strategies; }, [strategies]);
@@ -465,6 +474,7 @@ Formato de resposta (JSON puro):
       });
       setAiCost(p => +(p + c2).toFixed(4));
       const s = { ...obj2, id: uid(), objetivo: objective, trades: 0, ativo: true, criado: new Date().toLocaleString("pt-PT") };
+      if (user) import("./firebase.js").then(({ saveStrategy }) => saveStrategy(user.uid, s).catch(()=>{}));
       setStrategies(p => [s, ...p]);
       setObjective("");
       toast(`✦ Estratégia "${s.nome}" criada!`, "success");
@@ -721,6 +731,7 @@ JSON puro — inclui TODOS os ativos relevantes de TODAS as categorias:
       criado:    new Date().toLocaleString("pt-PT"),
     };
     setStrategies(p => [s, ...p]);
+    if (user) import("./firebase.js").then(({ saveStrategy }) => saveStrategy(user.uid, s).catch(()=>{}));
     toast(`✅ Estratégia "${s.nome}" criada e ativa!`, "buy");
   };
 
@@ -928,10 +939,17 @@ JSON puro:
             </div>
             <div style={{ display: "flex", gap: 8, flexShrink: 0, marginLeft: 16 }}>
               <Btn sm color={s.ativo ? T.gold : T.green}
-                onClick={() => setStrategies(p => p.map(x => x.id === s.id ? { ...x, ativo: !x.ativo } : x))}>
+                onClick={() => {
+                  const updated = { ...s, ativo: !s.ativo };
+                  setStrategies(p => p.map(x => x.id === s.id ? updated : x));
+                  if (user) import("./firebase.js").then(({ saveStrategy }) => saveStrategy(user.uid, updated).catch(()=>{}));
+                }}>
                 {s.ativo ? "⏸ Pausar" : "▶ Ativar"}
               </Btn>
-              <Btn sm color={T.red} onClick={() => setStrategies(p => p.filter(x => x.id !== s.id))}>✕</Btn>
+              <Btn sm color={T.red} onClick={() => {
+                setStrategies(p => p.filter(x => x.id !== s.id));
+                if (user) import("./firebase.js").then(({ deleteStrategy }) => deleteStrategy(user.uid, s.id).catch(()=>{}));
+              }}>✕</Btn>
             </div>
           </div>
           <div style={{ display: "grid", gridTemplateColumns: "repeat(5,1fr)", gap: 10, background: "rgba(0,0,0,0.2)", borderRadius: 8, padding: "11px 14px", marginTop: 12 }}>
@@ -1078,7 +1096,14 @@ JSON: {"signals":[{"id":"btc","sinal":"COMPRAR|VENDER|AGUARDAR","razao":"1 frase
         });
       } else {
         setPositions(p => [...p, pos]);
-        setBalance(b => { const n = +(Math.max(0, b - amount)).toFixed(2); balRef.current = n; return n; });
+        setBalance(b => {
+          const n = +(Math.max(0, b - amount)).toFixed(2); balRef.current = n;
+          if (user) import("./firebase.js").then(({ saveTrade, saveSetting }) => {
+            saveTrade(user.uid, pos).catch(()=>{});
+            saveSetting(user.uid, "liveBalance", n).catch(()=>{});
+          }).catch(()=>{});
+          return n;
+        });
       }
       setDailyVolume(p => ({ ...p, [assetId]: { buys: ((p[assetId]?.buys)||0)+1, sells: (p[assetId]?.sells)||0 }}));
       toast(`${isSim?"◎ [SIM]":"● [LIVE]"} Comprado ${a?.sym} @$${price.toFixed(2)} · €${amount}`, "buy");
@@ -1092,11 +1117,25 @@ JSON: {"signals":[{"id":"btc","sinal":"COMPRAR|VENDER|AGUARDAR","razao":"1 frase
         if (isSim) {
           setSimClosed(p => [closedTrade, ...p]);
           setSimPositions(p => p.filter(x => x.id !== openPos.id));
-          setSimBalance(b => { const n = +(b + openPos.amount + pnl).toFixed(2); simBalRef.current = n; return n; });
+          setSimBalance(b => {
+            const n = +(b + openPos.amount + pnl).toFixed(2); simBalRef.current = n;
+            if (user) import("./firebase.js").then(({ updateTrade, saveSetting }) => {
+              updateTrade(user.uid, openPos.id, { status: "MANUAL", closePrice: price, pnl, closedAt: closedTrade.closedAt }).catch(()=>{});
+              saveSetting(user.uid, "simBalance", n).catch(()=>{});
+            }).catch(()=>{});
+            return n;
+          });
         } else {
           setClosed(p => [closedTrade, ...p]);
           setPositions(p => p.filter(x => x.id !== openPos.id));
-          setBalance(b => { const n = +(b + openPos.amount + pnl).toFixed(2); balRef.current = n; return n; });
+          setBalance(b => {
+            const n = +(b + openPos.amount + pnl).toFixed(2); balRef.current = n;
+            if (user) import("./firebase.js").then(({ updateTrade, saveSetting }) => {
+              updateTrade(user.uid, openPos.id, { status: "MANUAL", closePrice: price, pnl, closedAt: closedTrade.closedAt }).catch(()=>{});
+              saveSetting(user.uid, "liveBalance", n).catch(()=>{});
+            }).catch(()=>{});
+            return n;
+          });
         }
         setDailyVolume(p => ({ ...p, [assetId]: { buys: (p[assetId]?.buys)||0, sells: ((p[assetId]?.sells)||0)+1 }}));
         toast(`${pnl >= 0 ? "✅" : "🛑"} Vendido ${a?.sym} · P&L ${sign(pnl)}€${Math.abs(pnl).toFixed(2)}`, pnl >= 0 ? "success" : "warn");
@@ -1130,8 +1169,13 @@ JSON: {"signals":[{"id":"btc","sinal":"COMPRAR|VENDER|AGUARDAR","razao":"1 frase
       terminadaEm:    new Date().toLocaleString("pt-PT"),
     };
     setSimSummary(summary);
-    // Arquiva automaticamente
-    setArchivedSims(p => [summary, ...p]);
+    // Arquiva automaticamente + persiste
+    setArchivedSims(p => {
+      const next = [summary, ...p];
+      if (user) import("./firebase.js").then(({ saveSetting }) =>
+        saveSetting(user.uid, "archivedSims", next).catch(()=>{}));
+      return next;
+    });
   };
 
   // ─────────────────────────────────────────────
@@ -2443,7 +2487,13 @@ pm2 save && pm2 startup`}</CodeBlock>
     };
 
     const upd  = (k, v) => setLocal(p => ({ ...p, [k]: v }));
-    const save = () => { setCurrentSettings(local); setSettingsLocal(null); toast(`✅ Definições ${isSimTab?"simulação":"live"} guardadas!`, "success"); };
+    const save = () => {
+      setCurrentSettings(local);
+      setSettingsLocal(null);
+      if (user) import("./firebase.js").then(({ saveSetting }) =>
+        saveSetting(user.uid, isSimTab ? "settings" : "liveSettings", local).catch(()=>{}));
+      toast(`✅ Definições ${isSimTab?"simulação":"live"} guardadas!`, "success");
+    };
 
     const perfilInfo = {
       conservador: { desc: "Quedas maiores para acionar compra, SL/TP mais apertados. Menos trades, mais seguros.", sl: 4, tp: 8,  compra: 2.5 },
@@ -2609,6 +2659,8 @@ pm2 save && pm2 startup`}</CodeBlock>
           <button onClick={() => {
             if (window.confirm("⚠ Apagar TODAS as simulações e histórico?\nEsta ação é irreversível.")) {
               setArchivedSims([]);
+              if (user) import("./firebase.js").then(({ saveSetting }) =>
+                saveSetting(user.uid, "archivedSims", []).catch(()=>{}));
               setSimClosed([]);
               setSimPositions([]);
               simPosRef.current = [];
@@ -3111,7 +3163,35 @@ JSON puro:
         }
       });
     }).catch(() => {});
-    return () => { unsubTrades?.(); unsubBal?.(); };
+    // Carregar estratégias guardadas
+    let unsubStrat = null, unsubSettings = null, unsubLive = null, unsubArch = null, unsubDt = null;
+    import("./firebase.js").then(({ subscribeStrategies, subscribeSetting: subSet }) => {
+      if (subscribeStrategies) {
+        unsubStrat = subscribeStrategies(uid2, (strats) => {
+          if (strats) { setStrategies(strats); stratRef.current = strats; }
+        });
+      }
+      // Carregar definições guardadas
+      unsubSettings = subSet(uid2, "settings", (val) => {
+        if (val && typeof val === "object") {
+          setSettings(val); settingsRef.current = val;
+          if (typeof val.capitalTotal === "number") { setSimCapital(val.capitalTotal); }
+        }
+      });
+      unsubLive = subSet(uid2, "liveSettings", (val) => {
+        if (val && typeof val === "object") { setLiveSettings(val); liveSettingsRef.current = val; }
+      });
+      unsubArch = subSet(uid2, "archivedSims", (val) => {
+        if (Array.isArray(val)) setArchivedSims(val);
+      });
+      unsubDt = subSet(uid2, "dtState", (val) => {
+        if (val && typeof val === "object") {
+          if (Array.isArray(val.trades)) setDtTrades(val.trades);
+          if (typeof val.dailyPnl === "number") setDtDailyPnl(val.dailyPnl);
+        }
+      });
+    }).catch(() => {});
+    return () => { unsubTrades?.(); unsubBal?.(); unsubStrat?.(); unsubSettings?.(); unsubLive?.(); unsubArch?.(); unsubDt?.(); };
   }, [user]);
 
   // ── Persistência: guardar trade quando aberto ─────────────────────────────
