@@ -239,6 +239,7 @@ export default function TradeAI() {
   const simPosRef   = useRef([]);
 
   const [tab, setTab]             = useState("dashboard");
+  const tabRef = useRef("dashboard");
   const [balance, setBalance]     = useState(INIT_BAL);
   const [assets, setAssets]       = useState(() =>
     ASSETS.map(a => ({ ...a, price: a.base, hist: genH(a.base), change: (Math.random() - 0.48) * 3.5 }))
@@ -293,6 +294,7 @@ export default function TradeAI() {
 
   useEffect(() => { balRef.current = balance; }, [balance]);
   useEffect(() => { simModeRef.current = simMode; }, [simMode]);
+  useEffect(() => { tabRef.current = tab; }, [tab]);
   useEffect(() => { simBalRef.current = simBalance; }, [simBalance]);
   useEffect(() => { liveSettingsRef.current = liveSettings; }, [liveSettings]);
   // Persistir day trading trades + P&L (com debounce simples)
@@ -346,8 +348,9 @@ export default function TradeAI() {
       setTick(prev => {
         const t = prev + 1;
 
-        // 1. Update prices — pausa se hover num gráfico
+        // 1. Update prices — pausa se hover num gráfico OU se está a editar definições
         if (hoveredChart.current) return prev; // ⏸ pausa quando hover num gráfico
+        if (tabRef.current === "settings") return prev; // ⏸ pausa nas Definições (evita perder foco)
         const upd = assRef.current.map(a => {
           const noise = (Math.random() - 0.492) * a.price * a.vol;
           const p     = +(Math.max(a.price + noise, a.price * 0.45)).toFixed(a.id === "eurusd" ? 4 : 2);
@@ -427,16 +430,19 @@ export default function TradeAI() {
     return () => clearInterval(iv);
   }, []);
 
-  // ── Derived ──
-  const invested    = positions.reduce((s, p) => s + p.amount, 0);
-  const unrealized  = positions.reduce((s, p) => {
+  // ── Derived — respeita o modo atual (SIM ou LIVE) ──
+  const activePositions = simMode ? simPositions : positions;
+  const activeClosed    = simMode ? simClosed    : closed;
+  const activeBalance   = simMode ? simBalance   : balance;
+  const invested    = activePositions.reduce((s, p) => s + p.amount, 0);
+  const unrealized  = activePositions.reduce((s, p) => {
     const a = assets.find(x => x.id === p.assetId);
     return s + (a ? (a.price - p.entryPrice) * p.units : 0);
   }, 0);
-  const realized    = closed.reduce((s, p) => s + (p.pnl || 0), 0);
+  const realized    = activeClosed.reduce((s, p) => s + (p.pnl || 0), 0);
   const totalPnl    = unrealized + realized;
-  const portfolioV  = balance + invested + unrealized;
-  const winRate     = closed.length ? (closed.filter(p => p.pnl > 0).length / closed.length) * 100 : null;
+  const portfolioV  = activeBalance + invested + unrealized;
+  const winRate     = activeClosed.length ? (activeClosed.filter(p => p.pnl > 0).length / activeClosed.length) * 100 : null;
 
   // ── AI: Create strategy ──
   const createStrategy = async () => {
@@ -541,9 +547,10 @@ JSON puro — inclui TODOS os ativos relevantes de TODAS as categorias:
   // RENDER: DASHBOARD
   // ─────────────────────────────────────────────
   const Dashboard = () => {
-    const myPositions = [...positions, ...simPositions];
+    const myPositions = activePositions;
     const hasPositions = myPositions.length > 0;
-    const capitalInicialDisplay = settings.capitalTotal;
+    const capitalInicialDisplay = simMode ? (settings.capitalTotal || simCapital) : (liveSettings.capitalTotal || 1000);
+    const activeStrats = strategies.filter(s => s.ativo);
 
     return (
       <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
@@ -562,9 +569,9 @@ JSON puro — inclui TODOS os ativos relevantes de TODAS as categorias:
                 <span style={{ color: T.muted, fontSize: 12 }}>capital configurado €{capitalInicialDisplay.toLocaleString()}</span>
               </div>
             </div>
-            <KPI label="Disponível"      value={`€${balance.toFixed(0)}`}      sub={`${((balance / capitalInicialDisplay) * 100).toFixed(1)}% livre`} />
-            <KPI label="P&L Não Realiz." value={`${sign(unrealized)}${eur(unrealized)}`} sub={`${positions.length} posições abertas`} color={unrealized >= 0 ? T.green : T.red} />
-            <KPI label="P&L Realizado"   value={`${sign(realized)}${eur(realized)}`}     sub={`${closed.length} trades fechados`}     color={realized >= 0 ? T.green : T.red} />
+            <KPI label="Disponível"      value={`€${activeBalance.toFixed(0)}`}      sub={`${capitalInicialDisplay>0?((activeBalance / capitalInicialDisplay) * 100).toFixed(0):0}% livre`} />
+            <KPI label="P&L Não Realiz." value={`${sign(unrealized)}${eur(unrealized)}`} sub={`${activePositions.length} posições abertas`} color={unrealized >= 0 ? T.green : T.red} />
+            <KPI label="P&L Realizado"   value={`${sign(realized)}${eur(realized)}`}     sub={`${activeClosed.length} trades fechados`}     color={realized >= 0 ? T.green : T.red} />
           </div>
         </Glass>
 
@@ -587,6 +594,43 @@ JSON puro — inclui TODOS os ativos relevantes de TODAS as categorias:
             <div style={{ fontSize: 9, color: T.muted, marginTop: 4 }}>~€0.007/chamada</div>
           </Glass>
         </div>
+
+        {/* Estratégias ativas no dashboard */}
+        {activeStrats.length > 0 && (
+          <Glass style={{ padding: "18px 22px" }}>
+            <div style={{ fontSize: 13, fontWeight: 700, marginBottom: 12 }}>
+              🎯 Estratégias Ativas ({activeStrats.length})
+            </div>
+            <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+              {activeStrats.map(s => {
+                const stratTrades = activeClosed.filter(t => t.stratId === s.id);
+                const stratPnl    = stratTrades.reduce((sum, t) => sum + (t.pnl || 0), 0);
+                const openForStrat = activePositions.filter(p => p.stratId === s.id);
+                const openPnl = openForStrat.reduce((sum, p) => {
+                  const a = assets.find(x => x.id === p.assetId);
+                  return sum + (a ? (a.price - p.entryPrice) * p.units : 0);
+                }, 0);
+                const total = stratPnl + openPnl;
+                return (
+                  <div key={s.id} style={{
+                    display: "grid", gridTemplateColumns: "2fr 1fr 1fr 1fr", gap: 12,
+                    padding: "10px 14px", borderRadius: 10,
+                    background: total >= 0 ? `${T.green}08` : `${T.red}08`,
+                    border: `1px solid ${total >= 0 ? T.green : T.red}20`, alignItems: "center", fontSize: 12,
+                  }}>
+                    <div>
+                      <div style={{ fontWeight: 700 }}>{s.nome}</div>
+                      <div style={{ fontSize: 10, color: T.muted }}>{(s.ativos||[]).join(", ").toUpperCase()} · {s.risco}</div>
+                    </div>
+                    <div><div style={{ fontSize: 8, color: T.muted }}>POSIÇÕES</div><div style={{ fontWeight: 700, color: T.accent }}>{openForStrat.length}</div></div>
+                    <div><div style={{ fontSize: 8, color: T.muted }}>TRADES</div><div style={{ fontWeight: 700 }}>{stratTrades.length}</div></div>
+                    <div><div style={{ fontSize: 8, color: T.muted }}>P&L</div><div style={{ fontWeight: 700, color: total >= 0 ? T.green : T.red }}>{sign(total)}€{Math.abs(total).toFixed(2)}</div></div>
+                  </div>
+                );
+              })}
+            </div>
+          </Glass>
+        )}
 
         {/* Gráficos dos meus investimentos (ou top movers se não houver) */}
         {hasPositions ? (
@@ -3398,7 +3442,7 @@ JSON puro:
         )}
 
         {/* MAIN */}
-        <main className="resp-main" style={{ flex: 1, padding: "22px", overflowY: "auto", maxHeight: isMobile ? "none" : "calc(100vh - 56px)" }}>
+        <main className="resp-main" style={{ flex: 1, padding: "22px", paddingBottom: simMode ? 90 : 22, overflowY: "auto", maxHeight: isMobile ? "none" : "calc(100vh - 56px)" }}>
           <div style={{ animation: "fadeIn 0.25s ease" }} key={tab}>
             {tab === "dashboard"  && <Dashboard />}
             {tab === "portfolio"  && <Portfolio />}
