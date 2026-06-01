@@ -258,9 +258,6 @@ export default function TradeAI() {
   const [suggestCats, setSuggestCats] = useState([]); // categorias selecionadas ([] = todas)
   const [tick, setTick]             = useState(0);
   const [liveData, setLiveData]     = useState(false);
-  // Estado do bot 24/7 (Railway). Quando vivo, a app não opera — só mostra.
-  const [botStatus, setBotStatus]   = useState(null); // { alive, mode, lastSeen, features }
-  const botActiveRef = useRef(false);
 
   // ── Definições ──
   const [settings, setSettings] = useState({
@@ -277,12 +274,6 @@ export default function TradeAI() {
     stopLossPadrao:      6,
     takeProfitPadrao:    12,
     autoInvestir:        false,
-    // ── Cérebro AI autónomo ──
-    aiBrain:             false,  // a IA compra/vende sozinha com base nos sinais
-    aiBrainConfianca:    78,     // confiança mínima (%) para a IA agir
-    trailingStop:        false,  // protege lucros movendo o stop-loss para cima
-    trailingStopPct:     4,      // distância (%) do trailing stop abaixo do pico
-    aiExitOnFlip:        true,   // sair quando a IA muda de COMPRAR para VENDER
   });
   const balRef    = useRef(INIT_BAL);
   const stratRef  = useRef([]);
@@ -325,9 +316,6 @@ export default function TradeAI() {
 
   useEffect(() => { simPosRef.current = simPositions; }, [simPositions]);
   useEffect(() => { simStartedRef.current = !!simStartedAt; }, [simStartedAt]);
-  // Bot 24/7 considerado ativo se o heartbeat foi nos últimos 3 min
-  const botAtivo = !!(botStatus?.alive && botStatus?.lastSeen && (Date.now() - botStatus.lastSeen < 3 * 60 * 1000));
-  useEffect(() => { botActiveRef.current = botAtivo; }, [botAtivo]);
   useEffect(() => { stratRef.current = strategies; }, [strategies]);
   useEffect(() => { posRef.current = positions; }, [positions]);
   useEffect(() => { closedRef.current = closed; }, [closed]);
@@ -372,20 +360,13 @@ export default function TradeAI() {
         if (hoveredChart.current) return prev; // ⏸ pausa quando hover num gráfico
         if (tabRef.current === "settings") return prev; // ⏸ pausa nas Definições (evita perder foco)
         const upd = assRef.current.map(a => {
-          // Se o bot 24/7 está a operar (SIM), não geramos ruído — os preços reais
-          // chegam via fetchMarkets (market.js). Mantemos o preço atual.
-          if (simModeRef.current && botActiveRef.current) {
-            const h0 = highs.current[a.id];
-            if (!h0 || a.price > h0.p || t - h0.t > 120) highs.current[a.id] = { p: a.price, t };
-            return { ...a, hist: [...a.hist.slice(-79), { i: t, v: a.price }] };
-          }
-          const noise = (Math.random() - 0.492) * a.price * a.vol * 4.5;
+          const noise = (Math.random() - 0.492) * a.price * a.vol;
           const p     = +(Math.max(a.price + noise, a.price * 0.45)).toFixed(a.id === "eurusd" ? 4 : 2);
           const chg   = a.id === "btc" || a.id === "eth" ? a.change : ((p - a.base) / a.base) * 100;
 
-          // Track rolling high (janela ~4 min — tempo suficiente para acumular quedas)
+          // Track rolling high (reset every 60 ticks)
           const h = highs.current[a.id];
-          if (!h || p > h.p || t - h.t > 120) highs.current[a.id] = { p, t };
+          if (!h || p > h.p || t - h.t > 60) highs.current[a.id] = { p, t };
 
           return { ...a, price: p, change: chg, hist: [...a.hist.slice(-79), { i: t, v: p }] };
         });
@@ -393,14 +374,6 @@ export default function TradeAI() {
 
         // ── Determina o modo ativo (SIM ou LIVE) e respetivos setters/refs ──
         const isSim = simModeRef.current;
-
-        // ⛔ Se o bot 24/7 está ativo e estamos em SIM, o BOT é a única autoridade de
-        //    trading. O browser não abre nem fecha posições (evita conflitos de saldo).
-        //    A app continua apenas a mostrar o que o bot escreve no Firestore.
-        if (isSim && botActiveRef.current) {
-          return t;
-        }
-
         const posPool   = isSim ? simPosRef.current : posRef.current;
         const curBal    = isSim ? simBalRef.current : balRef.current;
         const setPos    = isSim ? setSimPositions : setPositions;
@@ -408,53 +381,23 @@ export default function TradeAI() {
         const setClsd   = isSim ? setSimClosed    : setClosed;
         const balRefCur = isSim ? simBalRef        : balRef;
 
-        // 2. Gestão de posições abertas (modo ativo): trailing stop, flip da IA, SL/TP
-        const cfg = settingsRef.current || {};
-        const sigs = marketSignalsRef.current || {};
-        const trailingOn = !!cfg.trailingStop;
-        const trailPct   = cfg.trailingStopPct || 4;
-        const exitOnFlip = cfg.aiExitOnFlip !== false;
-        const flipConf   = cfg.aiBrainConfianca || 78;
+        // 2. Check SL/TP on open positions (modo ativo)
         const toClose = [], toKeep = [];
         posPool.forEach(pos => {
           const a = upd.find(x => x.id === pos.assetId);
           if (!a) { toKeep.push(pos); return; }
-          let p2 = { ...pos };
-
-          // ── Trailing stop: acompanha o pico, sobe o SL para proteger lucro ──
-          if (trailingOn) {
-            const peak = Math.max(p2.peak || p2.entryPrice, a.price);
-            p2.peak = peak;
-            // só sobe o SL quando já há lucro acima da entrada
-            if (peak > p2.entryPrice) {
-              const trailSl = +(peak * (1 - trailPct / 100)).toFixed(a.id === "eurusd" ? 4 : 2);
-              if (trailSl > p2.sl) p2.sl = trailSl; // nunca desce o SL
-            }
-          }
-
-          // ── Saída antecipada se a IA virar para VENDER com confiança ──
-          const sg = sigs[pos.assetId];
-          if (exitOnFlip && sg && sg.sinal === "VENDER" && (sg.confianca || 0) >= flipConf && a.price > p2.sl) {
-            const pnl = (a.price - p2.entryPrice) * p2.units;
-            toClose.push({ ...p2, status: "AI-EXIT", closePrice: a.price, closedAt: new Date().toLocaleTimeString("pt-PT"), pnl });
-            setBal(b => { const n = +(b + p2.amount + pnl).toFixed(2); balRefCur.current = n; return n; });
-            toast(`🤖 IA fechou ${a.sym} (sinal mudou) ${sign(pnl)}${eur(pnl)}`, pnl >= 0 ? "success" : "warn");
-            return;
-          }
-
-          if (a.price <= p2.sl) {
-            const pnl = (p2.sl - p2.entryPrice) * p2.units;
-            const wasTrail = p2.sl > pos.entryPrice && trailingOn;
-            toClose.push({ ...p2, status: wasTrail ? "TRAIL" : "SL", closePrice: p2.sl, closedAt: new Date().toLocaleTimeString("pt-PT"), pnl });
-            setBal(b => { const n = +(b + p2.amount + pnl).toFixed(2); balRefCur.current = n; return n; });
-            toast(`${wasTrail ? "🔒 Trailing" : "🛑 SL"} ${a.sym} — ${sign(pnl)}${eur(pnl)}`, pnl >= 0 ? "success" : "warn");
-          } else if (a.price >= p2.tp) {
-            const pnl = (p2.tp - p2.entryPrice) * p2.units;
-            toClose.push({ ...p2, status: "TP", closePrice: p2.tp, closedAt: new Date().toLocaleTimeString("pt-PT"), pnl });
-            setBal(b => { const n = +(b + p2.amount + pnl).toFixed(2); balRefCur.current = n; return n; });
+          if (a.price <= pos.sl) {
+            const pnl = (pos.sl - pos.entryPrice) * pos.units;
+            toClose.push({ ...pos, status: "SL", closePrice: pos.sl, closedAt: new Date().toLocaleTimeString("pt-PT"), pnl });
+            setBal(b => { const n = +(b + pos.amount + pnl).toFixed(2); balRefCur.current = n; return n; });
+            toast(`🛑 SL ${a.sym} — ${sign(pnl)}${eur(pnl)}`, "warn");
+          } else if (a.price >= pos.tp) {
+            const pnl = (pos.tp - pos.entryPrice) * pos.units;
+            toClose.push({ ...pos, status: "TP", closePrice: pos.tp, closedAt: new Date().toLocaleTimeString("pt-PT"), pnl });
+            setBal(b => { const n = +(b + pos.amount + pnl).toFixed(2); balRefCur.current = n; return n; });
             toast(`✅ TP ${a.sym} +${eur(pnl)}`, "success");
           } else {
-            toKeep.push(p2);
+            toKeep.push(pos);
           }
         });
         if (toClose.length) {
@@ -479,10 +422,6 @@ export default function TradeAI() {
               saveSetting(user.uid, isSim ? "simBalance" : "liveBalance", balRefCur.current).catch(() => {});
             }).catch(() => {});
           }
-        } else if (trailingOn) {
-          // Sem fechos, mas o trailing stop pode ter movido SLs → persistir alterações
-          setPos(toKeep);
-          if (isSim) simPosRef.current = toKeep;
         }
 
         // 3. Strategy signals — corre no modo ativo (SIM ou LIVE).
@@ -502,9 +441,7 @@ export default function TradeAI() {
               const a = upd.find(x => x.id === aid);
               if (!a) return;
               if (stratOpen + openedThisTick >= maxStrat) return; // limite atingido
-              // Máximo de referência: o maior entre o rolling-high e o pico do histórico visível.
-              const histHigh = a.hist.length ? Math.max(...a.hist.map(pt => pt.v)) : a.price;
-              const high     = Math.max(highs.current[aid]?.p || a.price, histHigh);
+              const high     = highs.current[aid]?.p || a.price;
               const dropPct  = ((high - a.price) / high) * 100;
               const balNow   = balRefCur.current;
               if (dropPct >= s.compra && balNow >= s.perTrade) {
@@ -513,7 +450,7 @@ export default function TradeAI() {
                 const tp    = +(a.price * (1 + s.tp / 100)).toFixed(a.id === "eurusd" ? 4 : 2);
                 const pos   = {
                   id: uid(), assetId: a.id, assetName: a.name, assetSym: a.sym,
-                  entryPrice: a.price, units, amount: s.perTrade, peak: a.price,
+                  entryPrice: a.price, units, amount: s.perTrade,
                   strategy: s.nome, stratId: s.id, sl, tp,
                   openedAt: new Date().toLocaleTimeString("pt-PT"), status: "ABERTA",
                   mode: isSim ? "sim" : "live",
@@ -527,46 +464,6 @@ export default function TradeAI() {
                 toast(`📈 ${isSim ? "[SIM] " : ""}BUY ${a.sym} @$${a.price.toFixed(2)} · "${s.nome}"`, "buy");
               }
             });
-          });
-        }
-
-        // 4. Cérebro AI autónomo — entra sozinho quando a IA dá COMPRAR com confiança ≥ slider.
-        //    Respeita o mesmo gate de "simRunning" e o limite de posições de estratégia.
-        if (simRunning && cfg.aiBrain) {
-          const minConf  = cfg.aiBrainConfianca || 78;
-          const maxStrat = cfg.maxEstrategias ?? 5;
-          const poolNow  = isSim ? simPosRef.current : posRef.current;
-          const brainOpen = poolNow.filter(p => p.stratId === "ai-brain").length;
-          const perTrade  = calcTradeAmount();
-          let openedBrain = 0;
-          Object.values(sigs).forEach(sg => {
-            if (!sg || sg.sinal !== "COMPRAR" || (sg.confianca || 0) < minConf) return;
-            const a = upd.find(x => x.id === sg.id);
-            if (!a || !a.trade) return; // só ativos negociáveis
-            const key = `aibrain_${sg.id}`;
-            if ((cds.current[key] || 0) > 0) { cds.current[key]--; return; }
-            // não duplicar posição no mesmo ativo
-            if (poolNow.some(p => p.assetId === sg.id && p.stratId === "ai-brain")) return;
-            if (brainOpen + openedBrain >= maxStrat) return;
-            if (balRefCur.current < perTrade) return;
-            const slPct = cfg.stopLossPadrao || 6;
-            const tpPct = cfg.takeProfitPadrao || 12;
-            const units = +(perTrade / a.price).toFixed(7);
-            const sl    = +(a.price * (1 - slPct / 100)).toFixed(a.id === "eurusd" ? 4 : 2);
-            const tp    = +(a.price * (1 + tpPct / 100)).toFixed(a.id === "eurusd" ? 4 : 2);
-            const pos   = {
-              id: uid(), assetId: a.id, assetName: a.name, assetSym: a.sym,
-              entryPrice: a.price, units, amount: perTrade, peak: a.price,
-              strategy: `🤖 AI Brain (${sg.confianca}%)`, stratId: "ai-brain", sl, tp,
-              openedAt: new Date().toLocaleTimeString("pt-PT"), status: "ABERTA",
-              mode: isSim ? "sim" : "live",
-            };
-            setPos(p => { const next = [...p, pos]; if (isSim) simPosRef.current = next; return next; });
-            setBal(b => { const n = +(Math.max(0, b - perTrade)).toFixed(2); balRefCur.current = n; return n; });
-            cds.current[key] = 30; // cooldown ~60s por ativo
-            openedBrain++;
-            if (user) import("./firebase.js").then(({ saveTrade }) => saveTrade(user.uid, pos).catch(()=>{})).catch(()=>{});
-            toast(`🤖 ${isSim ? "[SIM] " : ""}AI comprou ${a.sym} @$${a.price.toFixed(2)} · confiança ${sg.confianca}%`, "buy");
           });
         }
 
@@ -589,56 +486,6 @@ export default function TradeAI() {
   const totalPnl    = unrealized + realized;
   const portfolioV  = activeBalance + invested + unrealized;
   const winRate     = activeClosed.length ? (activeClosed.filter(p => p.pnl > 0).length / activeClosed.length) * 100 : null;
-
-  // ── Estatísticas avançadas de trading (a partir dos trades fechados + capital base) ──
-  const tradeStats = (() => {
-    const trades = [...activeClosed].filter(t => typeof t.pnl === "number");
-    const capBase = simMode ? (simCapital || 1000) : (liveSettings.capitalTotal || 1000);
-    if (trades.length === 0) {
-      return { count: 0, capBase, equity: [{ i: 0, v: capBase }] };
-    }
-    // Ordenar por hora de fecho (mais antigo primeiro) para construir a curva de equity
-    const ordered = [...trades].reverse(); // activeClosed guarda o mais recente primeiro
-    const wins   = ordered.filter(t => t.pnl > 0);
-    const losses = ordered.filter(t => t.pnl <= 0);
-    const grossWin  = wins.reduce((s, t) => s + t.pnl, 0);
-    const grossLoss = Math.abs(losses.reduce((s, t) => s + t.pnl, 0));
-    const net       = grossWin - grossLoss;
-    const avgWin    = wins.length   ? grossWin  / wins.length   : 0;
-    const avgLoss   = losses.length ? grossLoss / losses.length : 0;
-    const profitFactor = grossLoss > 0 ? grossWin / grossLoss : (grossWin > 0 ? Infinity : 0);
-    const expectancy   = net / ordered.length;
-    const bestTrade  = Math.max(...ordered.map(t => t.pnl));
-    const worstTrade = Math.min(...ordered.map(t => t.pnl));
-    // Curva de equity + max drawdown
-    let eq = capBase, peak = capBase, maxDD = 0;
-    const equity = [{ i: 0, v: capBase }];
-    ordered.forEach((t, i) => {
-      eq += t.pnl;
-      equity.push({ i: i + 1, v: +eq.toFixed(2) });
-      if (eq > peak) peak = eq;
-      const dd = peak > 0 ? ((peak - eq) / peak) * 100 : 0;
-      if (dd > maxDD) maxDD = dd;
-    });
-    // Sequências (streaks)
-    let curStreak = 0, maxWinStreak = 0, maxLossStreak = 0;
-    ordered.forEach(t => {
-      if (t.pnl > 0) { curStreak = curStreak >= 0 ? curStreak + 1 : 1; maxWinStreak = Math.max(maxWinStreak, curStreak); }
-      else           { curStreak = curStreak <= 0 ? curStreak - 1 : -1; maxLossStreak = Math.max(maxLossStreak, -curStreak); }
-    });
-    // Sharpe simplificado: média/desvio-padrão dos retornos por trade
-    const rets = ordered.map(t => t.pnl / capBase);
-    const mean = rets.reduce((s, r) => s + r, 0) / rets.length;
-    const variance = rets.reduce((s, r) => s + (r - mean) ** 2, 0) / rets.length;
-    const std = Math.sqrt(variance);
-    const sharpe = std > 0 ? (mean / std) * Math.sqrt(rets.length) : 0;
-    return {
-      count: ordered.length, capBase, wins: wins.length, losses: losses.length,
-      grossWin, grossLoss, net, avgWin, avgLoss, profitFactor, expectancy,
-      bestTrade, worstTrade, maxDD, equity, maxWinStreak, maxLossStreak, sharpe,
-      winRate: (wins.length / ordered.length) * 100,
-    };
-  })();
 
   // Conjunto de ativos onde tens posição aberta (modo ativo) — usado para validar sinais VENDER
   const heldAssetIds = new Set(activePositions.map(p => p.assetId));
@@ -681,28 +528,7 @@ Formato de resposta (JSON puro):
 }` }],
       });
       setAiCost(p => +(p + c2).toFixed(4));
-      // ── Saneamento da estratégia gerada pela IA ──
-      const validIds = ASSETS.map(a => a.id);
-      let ativosOk = Array.isArray(obj2.ativos) ? obj2.ativos.filter(id => validIds.includes(id)) : [];
-      if (ativosOk.length === 0) ativosOk = ["btc", "eth"]; // fallback seguro
-      // Queda de compra: limitar a 0.5–3% para garantir que dispara em tempo útil
-      let compraOk = Number(obj2.compra);
-      if (!compraOk || isNaN(compraOk)) compraOk = 1.5;
-      compraOk = Math.min(3, Math.max(0.5, compraOk));
-      // perTrade: dentro do capital atual (não maior que ~30% do saldo da simulação)
-      const capRef = simModeRef.current ? simBalRef.current : balRef.current;
-      let perTradeOk = Number(obj2.perTrade) || 100;
-      perTradeOk = Math.min(perTradeOk, Math.max(10, +(capRef * 0.3).toFixed(0)));
-      const s = {
-        ...obj2,
-        ativos: ativosOk,
-        compra: compraOk,
-        perTrade: perTradeOk,
-        sl: Number(obj2.sl) || 6,
-        tp: Number(obj2.tp) || 12,
-        id: uid(), objetivo: objective, trades: 0, ativo: true,
-        criado: new Date().toLocaleString("pt-PT"),
-      };
+      const s = { ...obj2, id: uid(), objetivo: objective, trades: 0, ativo: true, criado: new Date().toLocaleString("pt-PT") };
       if (user) import("./firebase.js").then(({ saveStrategy }) => saveStrategy(user.uid, s).catch(()=>{}));
       setStrategies(p => [s, ...p]);
       setObjective("");
@@ -778,34 +604,6 @@ JSON puro — inclui TODOS os ativos relevantes de TODAS as categorias:
 
     return (
       <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
-        {/* Estado do bot 24/7 */}
-        {botAtivo ? (
-          <div style={{
-            display:"flex", alignItems:"center", gap:12, padding:"12px 18px", borderRadius:12,
-            background:`${T.green}10`, border:`1px solid ${T.green}33`,
-          }}>
-            <div style={{ width:9, height:9, borderRadius:"50%", background:T.green, animation:"pulse 1.2s infinite", flexShrink:0 }}/>
-            <div style={{ flex:1 }}>
-              <div style={{ fontSize:12, fontWeight:700, color:T.green }}>🤖 Bot 24/7 ativo — a operar no servidor</div>
-              <div style={{ fontSize:10, color:T.muted, marginTop:2 }}>
-                As tuas posições são geridas no servidor, mesmo com a app fechada.
-                {botStatus?.features?.aiBrain && " · Cérebro AI ON"}
-                {botStatus?.features?.trailingStop && " · Trailing Stop ON"}
-              </div>
-            </div>
-            <span style={{ fontSize:9, color:T.muted }}>visto {Math.round((Date.now()-botStatus.lastSeen)/1000)}s atrás</span>
-          </div>
-        ) : (
-          <div style={{
-            display:"flex", alignItems:"center", gap:12, padding:"12px 18px", borderRadius:12,
-            background:`${T.gold}0c`, border:`1px solid ${T.gold}28`,
-          }}>
-            <div style={{ width:9, height:9, borderRadius:"50%", background:T.gold, flexShrink:0 }}/>
-            <div style={{ fontSize:11, color:T.muted }}>
-              <b style={{ color:T.gold }}>Bot 24/7 offline</b> — o trading só corre enquanto esta app estiver aberta. Liga o bot no servidor para operar sem a app.
-            </div>
-          </div>
-        )}
         {/* Hero */}
         <Glass style={{
           padding: "28px 32px",
@@ -846,82 +644,6 @@ JSON puro — inclui TODOS os ativos relevantes de TODAS as categorias:
             <div style={{ fontSize: 9, color: T.muted, marginTop: 4 }}>~€0.007/chamada</div>
           </Glass>
         </div>
-
-        {/* ── Estatísticas avançadas + curva de equity ── */}
-        {tradeStats.count > 0 && (
-          <Glass style={{ padding: "20px 24px" }}>
-            <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:16 }}>
-              <div style={{ fontSize: 13, fontWeight: 700 }}>📊 Estatísticas de Performance</div>
-              <span style={{ fontSize: 10, color: T.muted }}>{tradeStats.count} trades fechados</span>
-            </div>
-
-            {/* Curva de equity */}
-            {(() => {
-              const eq = tradeStats.equity;
-              const vals = eq.map(p => p.v);
-              const min = Math.min(...vals), max = Math.max(...vals);
-              const range = max - min || 1;
-              const W = 100, H = 32;
-              const pts = eq.map((p, i) => {
-                const x = (i / (eq.length - 1 || 1)) * W;
-                const y = H - ((p.v - min) / range) * H;
-                return `${x.toFixed(2)},${y.toFixed(2)}`;
-              }).join(" ");
-              const up = vals[vals.length - 1] >= tradeStats.capBase;
-              const col = up ? T.green : T.red;
-              return (
-                <div style={{ marginBottom: 18 }}>
-                  <div style={{ fontSize: 9, color: T.muted, letterSpacing: "0.12em", textTransform: "uppercase", marginBottom: 6 }}>Curva de Capital</div>
-                  <svg viewBox={`0 0 ${W} ${H}`} preserveAspectRatio="none" style={{ width: "100%", height: 90, display: "block" }}>
-                    <defs>
-                      <linearGradient id="eqgrad" x1="0" y1="0" x2="0" y2="1">
-                        <stop offset="0%" stopColor={col} stopOpacity="0.28" />
-                        <stop offset="100%" stopColor={col} stopOpacity="0" />
-                      </linearGradient>
-                    </defs>
-                    <polygon points={`0,${H} ${pts} ${W},${H}`} fill="url(#eqgrad)" />
-                    <polyline points={pts} fill="none" stroke={col} strokeWidth="0.8" vectorEffect="non-scaling-stroke" />
-                  </svg>
-                  <div style={{ display:"flex", justifyContent:"space-between", fontSize:9, color:T.muted, marginTop:4 }}>
-                    <span>Início €{tradeStats.capBase.toFixed(0)}</span>
-                    <span style={{ color: col, fontWeight:700 }}>Atual €{vals[vals.length-1].toFixed(2)}</span>
-                  </div>
-                </div>
-              );
-            })()}
-
-            {/* Grelha de métricas */}
-            <div className="resp-grid" style={{ display:"grid", gridTemplateColumns:"repeat(4,1fr)", gap:10 }}>
-              {[
-                { l:"Profit Factor", v: tradeStats.profitFactor === Infinity ? "∞" : tradeStats.profitFactor.toFixed(2),
-                  c: tradeStats.profitFactor >= 1.5 ? T.green : tradeStats.profitFactor >= 1 ? T.gold : T.red,
-                  sub: tradeStats.profitFactor >= 1.5 ? "saudável" : tradeStats.profitFactor >= 1 ? "marginal" : "a perder" },
-                { l:"Max Drawdown", v:`-${tradeStats.maxDD.toFixed(1)}%`,
-                  c: tradeStats.maxDD <= 10 ? T.green : tradeStats.maxDD <= 25 ? T.gold : T.red, sub:"maior queda" },
-                { l:"Expectativa", v:`${sign(tradeStats.expectancy)}€${Math.abs(tradeStats.expectancy).toFixed(2)}`,
-                  c: tradeStats.expectancy >= 0 ? T.green : T.red, sub:"por trade" },
-                { l:"Sharpe", v: tradeStats.sharpe.toFixed(2),
-                  c: tradeStats.sharpe >= 1 ? T.green : tradeStats.sharpe >= 0 ? T.gold : T.red, sub:"retorno/risco" },
-                { l:"Ganho Médio", v:`+€${tradeStats.avgWin.toFixed(2)}`, c:T.green, sub:`${tradeStats.wins} ganhos` },
-                { l:"Perda Média", v:`-€${tradeStats.avgLoss.toFixed(2)}`, c:T.red, sub:`${tradeStats.losses} perdas` },
-                { l:"Melhor Trade", v:`+€${tradeStats.bestTrade.toFixed(2)}`, c:T.green, sub:"maior ganho" },
-                { l:"Pior Trade", v:`${sign(tradeStats.worstTrade)}€${Math.abs(tradeStats.worstTrade).toFixed(2)}`, c:T.red, sub:"maior perda" },
-              ].map(m => (
-                <div key={m.l} style={{ background:"rgba(0,0,0,0.18)", borderRadius:9, padding:"11px 13px" }}>
-                  <div style={{ fontSize:8.5, color:T.muted, letterSpacing:"0.1em", textTransform:"uppercase", marginBottom:5 }}>{m.l}</div>
-                  <div style={{ fontSize:18, fontWeight:800, color:m.c }}>{m.v}</div>
-                  <div style={{ fontSize:8.5, color:T.muted, marginTop:2 }}>{m.sub}</div>
-                </div>
-              ))}
-            </div>
-
-            {/* Sequências */}
-            <div style={{ display:"flex", gap:14, marginTop:14, fontSize:11, color:T.muted }}>
-              <span>🔥 Melhor sequência: <b style={{ color:T.green }}>{tradeStats.maxWinStreak} ganhos seguidos</b></span>
-              <span>❄ Pior sequência: <b style={{ color:T.red }}>{tradeStats.maxLossStreak} perdas seguidas</b></span>
-            </div>
-          </Glass>
-        )}
 
         {/* Estratégias ativas no dashboard */}
         {activeStrats.length > 0 && (
@@ -1382,10 +1104,6 @@ JSON puro:
   const [brokerTab,     setBrokerTab]     = useState("alpaca"); // guia: corretora
   const [settingsLocal, setSettingsLocal] = useState(null);   // edição settings (top-level)
   const [marketSignals, setMarketSignals] = useState({});
-  const marketSignalsRef = useRef({});
-  useEffect(() => { marketSignalsRef.current = marketSignals; }, [marketSignals]);
-  // Histórico do sinal anterior por ativo (para detetar "flip" COMPRAR→VENDER)
-  const prevSignalsRef = useRef({});
   const [mktCatTab,     setMktCatTab]     = useState("Todos");
   const [simMinimized,  setSimMinimized]  = useState(true);  // começa minimizado
   const [dailyVolume,   setDailyVolume]   = useState({});
@@ -1484,7 +1202,7 @@ JSON: {"signals":[{"id":"btc","sinal":"COMPRAR|VENDER|AGUARDAR","razao":"1 frase
       }
       const pos = {
         id: uid(), assetId, assetName: a?.name || assetId, assetSym: a?.sym || assetId,
-        entryPrice: price, units, amount, sl, tp, peak: price,
+        entryPrice: price, units, amount, sl, tp,
         strategy: "Manual (Mercados)", stratId: "manual",
         openedAt: new Date().toLocaleTimeString("pt-PT"), status: "ABERTA",
         mode: isSim ? "sim" : "live",
@@ -1809,7 +1527,7 @@ JSON: {"signals":[{"id":"btc","sinal":"COMPRAR|VENDER|AGUARDAR","razao":"1 frase
                     <div><div style={{ fontSize:9, color:T.muted }}>ENTRADA</div><div style={{ fontWeight:600, fontSize:12 }}>${t.entryPrice?.toFixed(2)}</div></div>
                     <div><div style={{ fontSize:9, color:T.muted }}>SAÍDA</div><div style={{ fontWeight:600, fontSize:12 }}>${(+t.closePrice).toFixed(2)}</div></div>
                     <div><div style={{ fontSize:9, color:T.muted }}>INVESTIDO</div><div style={{ fontWeight:600 }}>€{t.amount}</div></div>
-                    <div><Badge label={t.status||"MANUAL"} color={t.status==="SL"?T.red:t.status==="TP"?T.green:(t.pnl||0)>=0?T.green:T.red}/></div>
+                    <div><Badge label={t.status||"MANUAL"} color={t.status==="TP"?T.green:t.status==="SL"?T.red:T.muted}/></div>
                     <div style={{ textAlign:"right" }}>
                       <div style={{ fontSize:16, fontWeight:800, color:col }}>{sign(t.pnl||0)}€{Math.abs(t.pnl||0).toFixed(2)}</div>
                       <div style={{ fontSize:10, color:col }}>{sign((t.pnl||0)/t.amount*100)}{Math.abs((t.pnl||0)/t.amount*100).toFixed(1)}%</div>
@@ -2571,18 +2289,8 @@ JSON: {"signals":[{"id":"btc","sinal":"COMPRAR|VENDER|AGUARDAR","razao":"1 frase
                         {pnl !== undefined && <span style={{ color: pnl >= 0 ? T.green : T.red, fontWeight: 700 }}>{sign(pnl)}{eur(pnl)}</span>}
                       </td>
                       <td style={{ padding: "9px 10px" }}>
-                        {(() => {
-                          const lbl = isOpen ? "ABERTA"
-                            : t.status === "TP" ? "✓ TP"
-                            : t.status === "MANUAL" ? "✓ Manual"
-                            : t.status === "TRAIL" ? "🔒 Trailing"
-                            : t.status === "AI-EXIT" ? "🤖 AI"
-                            : "✗ SL";
-                          const c = isOpen ? T.blue
-                            : t.status === "SL" ? T.red
-                            : (t.pnl || 0) >= 0 ? T.green : T.red;
-                          return <Badge label={lbl} color={c} />;
-                        })()}
+                        <Badge label={isOpen ? "ABERTA" : t.status === "TP" ? "✓ TP" : t.status === "MANUAL" ? "✓ Manual" : "✗ SL"}
+                          color={isOpen ? T.blue : (t.status === "TP" || t.status === "MANUAL") ? T.green : T.red} />
                       </td>
                     </tr>
                   );
@@ -2936,8 +2644,7 @@ pm2 save && pm2 startup`}</CodeBlock>
     const currentSettings      = isSimTab ? settings : liveSettings;
     const setCurrentSettings   = isSimTab ? setSettings : setLiveSettings;
     // local edit state vive no top-level (settingsLocal) para sobreviver ao re-render de 2s
-    const brainDefaults = { aiBrain: false, aiBrainConfianca: 78, trailingStop: false, trailingStopPct: 4, aiExitOnFlip: true };
-    const local = { ...brainDefaults, ...(settingsLocal || currentSettings) };
+    const local = settingsLocal || { ...currentSettings };
     const setLocal = (updater) => {
       setSettingsLocal(prev => {
         const base = prev || { ...currentSettings };
@@ -3162,84 +2869,6 @@ pm2 save && pm2 startup`}</CodeBlock>
                   <div style={{ position: "absolute", top: 3, left: local.rotacaoAtiva ? 22 : 2, width: 18, height: 18, borderRadius: "50%", background: "#fff", transition: "left 0.2s" }} />
                 </div>
                 <span style={{ fontSize: 12, color: local.rotacaoAtiva ? T.gold : T.muted, fontWeight: 700 }}>{local.rotacaoAtiva ? "ATIVADA" : "Desativada"}</span>
-              </div>
-            </div>
-          </div>
-        </Glass>
-
-        {/* ── Automação Avançada com IA ── */}
-        <Glass style={{ padding: "22px 24px", background: `${T.accent}06`, border: `1px solid ${T.accent}22` }}>
-          <div style={{ fontSize: 13, fontWeight: 700, color: T.aLight, marginBottom: 4 }}>🤖 Automação Avançada com IA</div>
-          <div style={{ fontSize: 11, color: T.muted, marginBottom: 18, lineHeight: 1.55 }}>
-            A IA decide compras e vendas com base nos seus próprios sinais de mercado (atualizados a cada 5 min).
-            Funciona com a simulação iniciada ou com o Auto-Investir ligado.
-          </div>
-
-          {/* Cérebro AI */}
-          <div style={{ background: "rgba(0,0,0,0.18)", borderRadius: 10, padding: "16px 18px", marginBottom: 14 }}>
-            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 6 }}>
-              <div>
-                <div style={{ fontSize: 12, fontWeight: 700 }}>Cérebro AI — entrada autónoma</div>
-                <div style={{ fontSize: 10, color: T.muted, marginTop: 2 }}>Compra sozinho quando a IA dá sinal de COMPRAR com confiança suficiente.</div>
-              </div>
-              <div onClick={() => upd("aiBrain", !local.aiBrain)} style={{ cursor: "pointer", flexShrink: 0 }}>
-                <div style={{ width: 44, height: 24, borderRadius: 12, background: local.aiBrain ? T.accent : "rgba(255,255,255,0.1)", position: "relative", transition: "all 0.2s" }}>
-                  <div style={{ position: "absolute", top: 3, left: local.aiBrain ? 22 : 2, width: 18, height: 18, borderRadius: "50%", background: "#fff", transition: "left 0.2s" }} />
-                </div>
-              </div>
-            </div>
-            {local.aiBrain && (
-              <div style={{ marginTop: 12 }}>
-                <div style={{ fontSize: 11, color: T.muted, marginBottom: 6 }}>
-                  Confiança mínima para agir: <b style={{ color: T.aLight }}>{local.aiBrainConfianca}%</b>
-                </div>
-                <input type="range" min={60} max={95} value={local.aiBrainConfianca}
-                  onChange={e => upd("aiBrainConfianca", +e.target.value)} style={{ width: "100%", accentColor: T.accent }} />
-                <div style={{ display: "flex", justifyContent: "space-between", fontSize: 9, color: T.muted, marginTop: 4 }}>
-                  <span>60% · mais trades, mais risco</span><span>95% · só sinais fortes</span>
-                </div>
-              </div>
-            )}
-          </div>
-
-          {/* Trailing stop */}
-          <div style={{ background: "rgba(0,0,0,0.18)", borderRadius: 10, padding: "16px 18px", marginBottom: 14 }}>
-            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 6 }}>
-              <div>
-                <div style={{ fontSize: 12, fontWeight: 700 }}>🔒 Trailing Stop — proteger lucros</div>
-                <div style={{ fontSize: 10, color: T.muted, marginTop: 2 }}>O stop-loss sobe atrás do preço quando estás em lucro, travando ganhos sem cortar cedo demais.</div>
-              </div>
-              <div onClick={() => upd("trailingStop", !local.trailingStop)} style={{ cursor: "pointer", flexShrink: 0 }}>
-                <div style={{ width: 44, height: 24, borderRadius: 12, background: local.trailingStop ? T.green : "rgba(255,255,255,0.1)", position: "relative", transition: "all 0.2s" }}>
-                  <div style={{ position: "absolute", top: 3, left: local.trailingStop ? 22 : 2, width: 18, height: 18, borderRadius: "50%", background: "#fff", transition: "left 0.2s" }} />
-                </div>
-              </div>
-            </div>
-            {local.trailingStop && (
-              <div style={{ marginTop: 12 }}>
-                <div style={{ fontSize: 11, color: T.muted, marginBottom: 6 }}>
-                  Distância do trailing: <b style={{ color: T.aLight }}>{local.trailingStopPct}%</b> abaixo do pico
-                </div>
-                <input type="range" min={1} max={12} value={local.trailingStopPct}
-                  onChange={e => upd("trailingStopPct", +e.target.value)} style={{ width: "100%", accentColor: T.green }} />
-                <div style={{ display: "flex", justifyContent: "space-between", fontSize: 9, color: T.muted, marginTop: 4 }}>
-                  <span>1% · trava cedo</span><span>12% · dá mais espaço</span>
-                </div>
-              </div>
-            )}
-          </div>
-
-          {/* Saída por flip da IA */}
-          <div style={{ background: "rgba(0,0,0,0.18)", borderRadius: 10, padding: "16px 18px" }}>
-            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-              <div>
-                <div style={{ fontSize: 12, fontWeight: 700 }}>↩ Sair quando a IA muda de opinião</div>
-                <div style={{ fontSize: 10, color: T.muted, marginTop: 2 }}>Fecha a posição em lucro se a IA passar a sinal de VENDER com alta confiança.</div>
-              </div>
-              <div onClick={() => upd("aiExitOnFlip", !local.aiExitOnFlip)} style={{ cursor: "pointer", flexShrink: 0 }}>
-                <div style={{ width: 44, height: 24, borderRadius: 12, background: local.aiExitOnFlip ? T.blue : "rgba(255,255,255,0.1)", position: "relative", transition: "all 0.2s" }}>
-                  <div style={{ position: "absolute", top: 3, left: local.aiExitOnFlip ? 22 : 2, width: 18, height: 18, borderRadius: "50%", background: "#fff", transition: "left 0.2s" }} />
-                </div>
               </div>
             </div>
           </div>
@@ -3794,27 +3423,11 @@ JSON puro:
       });
     }).catch(() => {});
     // Carregar estratégias guardadas
-    let unsubStrat = null, unsubSettings = null, unsubLive = null, unsubArch = null, unsubDt = null, unsubBot = null;
+    let unsubStrat = null, unsubSettings = null, unsubLive = null, unsubArch = null, unsubDt = null;
     import("./firebase.js").then(({ subscribeStrategies, subscribeSetting: subSet }) => {
       if (subscribeStrategies) {
         unsubStrat = subscribeStrategies(uid2, (strats) => {
-          if (strats) {
-            const validIds = ASSETS.map(a => a.id);
-            const fixed = strats.map(s => {
-              let ativos = Array.isArray(s.ativos) ? s.ativos.filter(id => validIds.includes(id)) : [];
-              if (ativos.length === 0) ativos = ["btc", "eth"];
-              let compra = Number(s.compra);
-              if (!compra || isNaN(compra)) compra = 1.5;
-              compra = Math.min(3, Math.max(0.5, compra));
-              return {
-                ...s, ativos, compra,
-                perTrade: Number(s.perTrade) || 100,
-                sl: Number(s.sl) || 6,
-                tp: Number(s.tp) || 12,
-              };
-            });
-            setStrategies(fixed); stratRef.current = fixed;
-          }
+          if (strats) { setStrategies(strats); stratRef.current = strats; }
         });
       }
       // Carregar definições guardadas
@@ -3836,11 +3449,8 @@ JSON puro:
           if (typeof val.dailyPnl === "number") setDtDailyPnl(val.dailyPnl);
         }
       });
-      unsubBot = subSet(uid2, "botStatus", (val) => {
-        if (val && typeof val === "object") setBotStatus(val);
-      });
     }).catch(() => {});
-    return () => { unsubTrades?.(); unsubBal?.(); unsubStrat?.(); unsubSettings?.(); unsubLive?.(); unsubArch?.(); unsubDt?.(); unsubBot?.(); };
+    return () => { unsubTrades?.(); unsubBal?.(); unsubStrat?.(); unsubSettings?.(); unsubLive?.(); unsubArch?.(); unsubDt?.(); };
   }, [user]);
 
   // ── Persistência: guardar trade quando aberto ─────────────────────────────
