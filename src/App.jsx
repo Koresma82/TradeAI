@@ -2593,6 +2593,13 @@ pm2 save && pm2 startup`}</CodeBlock>
         <div style={{ display: "flex", gap: 12, justifyContent: "space-between", alignItems: "center" }}>
           {/* Limpar simulações */}
           <button onClick={() => {
+            navigator.clipboard?.writeText(user.uid);
+            toast(`UID copiado: ${user.uid}`, "success");
+          }} style={{
+            background: `${T.blue}12`, border: `1px solid ${T.blue}33`, borderRadius: 8,
+            padding: "10px 18px", fontSize: 11, color: T.blue, cursor: "pointer", fontFamily: "inherit", fontWeight: 700,
+          }}>📋 Copiar UID (para o bot)</button>
+          <button onClick={() => {
             if (window.confirm("⚠ Apagar TODAS as simulações e histórico?\nEsta ação é irreversível.")) {
               setArchivedSims([]);
               setSimClosed([]);
