@@ -253,6 +253,7 @@ export default function TradeAI() {
   const [aiSuggestions, setAiSuggestions] = useState(null);
   const [suggestLoading, setSuggestLoading] = useState(false);
   const [toasts, setToasts]         = useState([]);
+  const [confirmModal, setConfirmModal] = useState(null); // { title, message, lines, danger, confirmLabel, onConfirm }
   const [tick, setTick]             = useState(0);
   const [liveData, setLiveData]     = useState(false);
 
@@ -264,6 +265,10 @@ export default function TradeAI() {
     percentagem:         5,
     riscoPerfil:         "moderado",
     maxPosicoesAbertas:  5,
+    maxManuais:          5,
+    maxEstrategias:      5,
+    maxDayTrading:       5,
+    rotacaoAtiva:        false,
     stopLossPadrao:      6,
     takeProfitPadrao:    12,
     autoInvestir:        false,
@@ -493,9 +498,10 @@ Formato de resposta (JSON puro):
     if (aiLoading) return;
     setAiLoading(true);
     try {
-      // Group all assets by category for the AI
+      // Group assets by category — filtra pelas categorias selecionadas
+      const catsToUse = analyseCats.length > 0 ? analyseCats : ["Crypto","Commodity","ETF","Forex"];
       const byCategory = {};
-      assets.forEach(a => {
+      assets.filter(a => catsToUse.includes(a.cat)).forEach(a => {
         if (!byCategory[a.cat]) byCategory[a.cat] = [];
         byCategory[a.cat].push(`${a.name}(${a.sym}):$${fmt(a.price,a.id)}(${pctFmt(a.change)})`);
       });
@@ -512,7 +518,7 @@ Saldo: €${balance.toFixed(0)} | Posições: ${positions.length} | P&L não rea
 Preços agrupados por categoria${liveData ? " (crypto em tempo real)" : " (simulados)"}:
 ${lines}
 
-Para CADA categoria seleciona os TOP ativos com maior potencial AGORA (máx 6 por categoria).
+Para CADA categoria seleciona os 6 ativos com maior potencial AGORA (exatamente até 6 por categoria, prioriza os de maior movimento).
 Para cada um dá "previsao" = frase simples sobre próximos 1-5 dias em português.
 
 JSON puro — inclui TODOS os ativos relevantes de TODAS as categorias:
@@ -623,7 +629,7 @@ JSON puro — inclui TODOS os ativos relevantes de TODAS as categorias:
                       <div style={{ fontSize: 10, color: T.muted }}>{(s.ativos||[]).join(", ").toUpperCase()} · {s.risco}</div>
                     </div>
                     <div><div style={{ fontSize: 8, color: T.muted }}>POSIÇÕES</div><div style={{ fontWeight: 700, color: T.accent }}>{openForStrat.length}</div></div>
-                    <div><div style={{ fontSize: 8, color: T.muted }}>TRADES</div><div style={{ fontWeight: 700 }}>{stratTrades.length}</div></div>
+                    <div><div style={{ fontSize: 8, color: T.muted }}>TRADES</div><div style={{ fontWeight: 700 }}>{stratTrades.length + openForStrat.length}</div></div>
                     <div><div style={{ fontSize: 8, color: T.muted }}>P&L</div><div style={{ fontWeight: 700, color: total >= 0 ? T.green : T.red }}>{sign(total)}€{Math.abs(total).toFixed(2)}</div></div>
                   </div>
                 );
@@ -1114,6 +1120,15 @@ JSON: {"signals":[{"id":"btc","sinal":"COMPRAR|VENDER|AGUARDAR","razao":"1 frase
       const currentBal = isSim ? simBalRef.current : balRef.current;
       if (currentBal < amount) {
         toast(`Saldo insuficiente — tens €${currentBal.toFixed(2)} e precisas €${amount}`, "error");
+        setOrderModal(null);
+        return;
+      }
+      // Verificar limite de posições manuais
+      const poolPositions = isSim ? simPosRef.current : positions;
+      const manualCount = poolPositions.filter(p => p.stratId === "manual").length;
+      const maxManuais = settingsRef.current?.maxManuais ?? 5;
+      if (manualCount >= maxManuais) {
+        toast(`Limite de ${maxManuais} posições manuais atingido`, "warn");
         setOrderModal(null);
         return;
       }
@@ -1822,6 +1837,7 @@ JSON: {"signals":[{"id":"btc","sinal":"COMPRAR|VENDER|AGUARDAR","razao":"1 frase
   // ─────────────────────────────────────────────
   const AI_CATS = ["Todos","Crypto","Commodity","ETF","Forex"];
   const [aiCat, setAiCat] = useState("Todos");
+  const [analyseCats, setAnalyseCats] = useState([]); // categorias selecionadas para analisar ([] = todas)
 
   const AIIntel = () => {
     const sc = s => s === "COMPRAR" ? T.green : s === "VENDER" ? T.red : T.gold;
@@ -1898,16 +1914,43 @@ JSON: {"signals":[{"id":"btc","sinal":"COMPRAR|VENDER|AGUARDAR","razao":"1 frase
 
         {/* ── ANÁLISE BOTÃO ── */}
         <Glass style={{ padding: "20px 24px" }} glow>
-          <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:8 }}>
+          <div style={{ display:"flex", justifyContent:"space-between", alignItems:"flex-start", marginBottom:14, flexWrap:"wrap", gap:12 }}>
             <div>
               <div style={{ fontSize: 15, fontWeight: 700, marginBottom: 3 }}>◆ Análise Profunda com IA</div>
               <div style={{ fontSize: 11, color: T.muted }}>
-                Gera recomendações detalhadas com previsão de tendência e análise de risco para cada ativo.
+                Seleciona as categorias a analisar (nenhuma = todas). A IA dá até 6 oportunidades por categoria.
               </div>
             </div>
-            <Btn onClick={analyseMarket} disabled={aiLoading} color={T.accent} style={{ padding: "11px 24px", fontSize: 13, flexShrink:0, marginLeft:16 }}>
+            <Btn onClick={analyseMarket} disabled={aiLoading} color={T.accent} style={{ padding: "11px 24px", fontSize: 13, flexShrink:0 }}>
               {aiLoading ? "◌ A analisar…" : "◆ Analisar Agora"}
             </Btn>
+          </div>
+          {/* Seletor de categorias */}
+          <div style={{ display:"flex", gap:8, flexWrap:"wrap" }}>
+            {[
+              ["Crypto","💰 Cripto"],
+              ["Commodity","🥇 Metais/Petróleo"],
+              ["ETF","📈 ETFs"],
+              ["Forex","💱 Forex"],
+            ].map(([cat, label]) => {
+              const sel = analyseCats.includes(cat);
+              return (
+                <button key={cat} onClick={() => {
+                  setAnalyseCats(prev => sel ? prev.filter(c => c !== cat) : [...prev, cat]);
+                }} style={{
+                  background: sel ? `${T.accent}22` : "rgba(255,255,255,0.04)",
+                  border: `1px solid ${sel ? T.accent+"66" : T.border}`,
+                  borderRadius: 99, padding: "6px 16px", fontSize: 12, fontWeight: 700,
+                  color: sel ? T.aLight : T.muted, cursor: "pointer", fontFamily: "inherit",
+                }}>{sel ? "✓ " : ""}{label}</button>
+              );
+            })}
+            {analyseCats.length > 0 && (
+              <button onClick={() => setAnalyseCats([])} style={{
+                background: "transparent", border: `1px solid ${T.border}`,
+                borderRadius: 99, padding: "6px 14px", fontSize: 11, color: T.muted, cursor: "pointer", fontFamily: "inherit",
+              }}>Limpar (todas)</button>
+            )}
           </div>
         </Glass>
 
@@ -2582,7 +2625,7 @@ pm2 save && pm2 startup`}</CodeBlock>
             <div>
               <div style={{ fontSize: 10, color: T.muted, letterSpacing: "0.12em", textTransform: "uppercase", marginBottom: 8 }}>Capital total disponível (€)</div>
               <div style={{ fontSize: 11, color: T.muted, marginBottom: 8, lineHeight: 1.55 }}>O total que tens para investir. O bot nunca gasta mais do que isto.</div>
-              <input type="number" value={local.capitalTotal} onChange={e => upd("capitalTotal", +e.target.value)}
+              <input key="cap-total" type="number" defaultValue={local.capitalTotal} onChange={e => upd("capitalTotal", +e.target.value)}
                 style={{ width: "100%", background: "rgba(255,255,255,0.05)", border: `1px solid ${T.accent}33`, borderRadius: 8, padding: "10px 14px", color: T.text, fontSize: 15, fontWeight: 700, fontFamily: "inherit", outline: "none" }} />
             </div>
             <div>
@@ -2600,7 +2643,7 @@ pm2 save && pm2 startup`}</CodeBlock>
               {local.modoValor === "fixo" ? (
                 <div>
                   <div style={{ fontSize: 11, color: T.muted, marginBottom: 6 }}>Valor fixo por cada trade (€)</div>
-                  <input type="number" value={local.valorFixo} onChange={e => upd("valorFixo", +e.target.value)}
+                  <input key="val-fixo" type="number" defaultValue={local.valorFixo} onChange={e => upd("valorFixo", +e.target.value)}
                     style={{ width: "100%", background: "rgba(255,255,255,0.05)", border: `1px solid ${T.accent}33`, borderRadius: 8, padding: "10px 14px", color: T.text, fontSize: 15, fontWeight: 700, fontFamily: "inherit", outline: "none" }} />
                 </div>
               ) : (
@@ -2629,7 +2672,10 @@ pm2 save && pm2 startup`}</CodeBlock>
               { id: "moderado",    emoji: "⚖️", label: "Moderado",     desc: "Equilíbrio (recomendado)"  },
               { id: "agressivo",   emoji: "🚀", label: "Agressivo",    desc: "Mais trades, mais risco"   },
             ].map(p => (
-              <div key={p.id} onClick={() => upd("riscoPerfil", p.id)} style={{
+              <div key={p.id} onClick={() => {
+                const pi = perfilInfo[p.id];
+                setLocal(prev => ({ ...prev, riscoPerfil: p.id, stopLossPadrao: pi.sl, takeProfitPadrao: pi.tp }));
+              }} style={{
                 padding: "16px", borderRadius: 12, cursor: "pointer",
                 background: local.riscoPerfil === p.id ? `${riskC(p.id.toUpperCase())}18` : "rgba(255,255,255,0.03)",
                 border: `2px solid ${local.riscoPerfil === p.id ? riskC(p.id.toUpperCase()) : T.border}`,
@@ -2662,21 +2708,42 @@ pm2 save && pm2 startup`}</CodeBlock>
         <Glass style={{ padding: "22px 24px" }}>
           <div style={{ fontSize: 13, fontWeight: 700, color: T.aLight, marginBottom: 6 }}>🔒 Limites de Segurança</div>
           <div style={{ fontSize: 11, color: T.muted, marginBottom: 16, lineHeight: 1.6 }}>Proteções automáticas. O bot para se estes limites forem atingidos.</div>
-          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 16 }}>
+          {/* Limites de posições por tipo */}
+          <div style={{ fontSize: 11, color: T.aLight, fontWeight: 700, marginBottom: 10 }}>Máximo de posições abertas por tipo</div>
+          <div className="resp-grid" style={{ display: "grid", gridTemplateColumns: "repeat(3,1fr)", gap: 12, marginBottom: 16 }}>
             {[
-              { k: "maxPosicoesAbertas", l: "Máx. posições em simultâneo", desc: "Não abre mais trades além deste número", min: 1, max: 20 },
-              { k: "stopLossPadrao",     l: "Stop Loss padrão (%)",         desc: "Vende se preço cair esta percentagem",  min: 1, max: 30 },
-              { k: "takeProfitPadrao",   l: "Take Profit padrão (%)",       desc: "Vende se preço subir esta percentagem", min: 2, max: 50 },
+              { k: "maxManuais",     l: "✋ Manuais",     desc: "Compras tuas em Mercados" },
+              { k: "maxEstrategias", l: "🎯 Estratégias", desc: "Trades automáticos do bot" },
+              { k: "maxDayTrading",  l: "⚡ Day Trading",  desc: "Scalping rápido" },
+            ].map(f => (
+              <div key={f.k} style={{ background: "rgba(0,0,0,0.18)", borderRadius: 10, padding: "14px 16px" }}>
+                <div style={{ fontSize: 11, fontWeight: 600, marginBottom: 3 }}>{f.l}</div>
+                <div style={{ fontSize: 9, color: T.muted, marginBottom: 10, lineHeight: 1.4 }}>{f.desc}</div>
+                <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+                  <input type="range" min={1} max={20} value={local[f.k] ?? 5} onChange={e => upd(f.k, +e.target.value)} style={{ flex: 1, accentColor: T.accent }} />
+                  <div style={{ fontSize: 16, fontWeight: 700, color: T.aLight, minWidth: 24, textAlign: "right" }}>{local[f.k] ?? 5}</div>
+                </div>
+              </div>
+            ))}
+          </div>
+          {/* SL/TP */}
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 16, marginBottom: 16 }}>
+            {[
+              { k: "stopLossPadrao",   l: "Stop Loss padrão (%)",   desc: "Vende se preço cair esta percentagem",  min: 1, max: 30 },
+              { k: "takeProfitPadrao", l: "Take Profit padrão (%)", desc: "Vende se preço subir esta percentagem", min: 2, max: 50 },
             ].map(f => (
               <div key={f.k} style={{ background: "rgba(0,0,0,0.18)", borderRadius: 10, padding: "14px 16px" }}>
                 <div style={{ fontSize: 11, fontWeight: 600, marginBottom: 4 }}>{f.l}</div>
                 <div style={{ fontSize: 10, color: T.muted, marginBottom: 10, lineHeight: 1.5 }}>{f.desc}</div>
                 <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
                   <input type="range" min={f.min} max={f.max} value={local[f.k]} onChange={e => upd(f.k, +e.target.value)} style={{ flex: 1, accentColor: T.accent }} />
-                  <div style={{ fontSize: 16, fontWeight: 700, color: T.aLight, minWidth: 38, textAlign: "right" }}>{local[f.k]}{f.k !== "maxPosicoesAbertas" ? "%" : ""}</div>
+                  <div style={{ fontSize: 16, fontWeight: 700, color: T.aLight, minWidth: 38, textAlign: "right" }}>{local[f.k]}%</div>
                 </div>
               </div>
             ))}
+          </div>
+          {/* Auto-investir + Rotação */}
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 16 }}>
             <div style={{ background: `${T.accent}0a`, border: `1px solid ${T.accent}22`, borderRadius: 10, padding: "14px 16px" }}>
               <div style={{ fontSize: 11, fontWeight: 600, marginBottom: 4 }}>Auto-Investir com AI</div>
               <div style={{ fontSize: 10, color: T.muted, marginBottom: 12, lineHeight: 1.5 }}>A IA investe automaticamente sem precisares de carregar em "Investir".</div>
@@ -2685,6 +2752,37 @@ pm2 save && pm2 startup`}</CodeBlock>
                   <div style={{ position: "absolute", top: 3, left: local.autoInvestir ? 22 : 2, width: 18, height: 18, borderRadius: "50%", background: "#fff", transition: "left 0.2s" }} />
                 </div>
                 <span style={{ fontSize: 12, color: local.autoInvestir ? T.green : T.muted, fontWeight: 700 }}>{local.autoInvestir ? "ATIVADO" : "Desativado"}</span>
+              </div>
+            </div>
+            <div style={{ background: `${T.gold}0a`, border: `1px solid ${T.gold}22`, borderRadius: 10, padding: "14px 16px" }}>
+              <div style={{ fontSize: 11, fontWeight: 600, marginBottom: 4 }}>🔄 Rotação de Posições</div>
+              <div style={{ fontSize: 10, color: T.muted, marginBottom: 12, lineHeight: 1.5 }}>Quando o limite está cheio, vende a posição com mais lucro para abrir outra melhor.</div>
+              <div onClick={() => {
+                if (!local.rotacaoAtiva) {
+                  // Ativar → mostrar aviso
+                  setConfirmModal({
+                    danger: true,
+                    icon: "🔄",
+                    title: "Ativar Rotação de Posições?",
+                    message: "Esta é uma estratégia avançada e arriscada. Lê com atenção:",
+                    lines: [
+                      "Vais trocar lucro REAL e garantido por lucro HIPOTÉTICO",
+                      "A 'vantagem' da nova posição é uma previsão, não um facto",
+                      "Cortar vencedores cedo é um erro comum que destrói contas",
+                      "Em modo real, cada troca gera custos (spread/comissões)",
+                      "Recomendado: testa em simulação e compara com o modo normal",
+                    ],
+                    confirmLabel: "Percebo o risco, ativar",
+                    onConfirm: () => upd("rotacaoAtiva", true),
+                  });
+                } else {
+                  upd("rotacaoAtiva", false);
+                }
+              }} style={{ display: "flex", alignItems: "center", gap: 10, cursor: "pointer" }}>
+                <div style={{ width: 44, height: 24, borderRadius: 12, background: local.rotacaoAtiva ? T.gold : "rgba(255,255,255,0.1)", position: "relative", transition: "all 0.2s" }}>
+                  <div style={{ position: "absolute", top: 3, left: local.rotacaoAtiva ? 22 : 2, width: 18, height: 18, borderRadius: "50%", background: "#fff", transition: "left 0.2s" }} />
+                </div>
+                <span style={{ fontSize: 12, color: local.rotacaoAtiva ? T.gold : T.muted, fontWeight: 700 }}>{local.rotacaoAtiva ? "ATIVADA" : "Desativada"}</span>
               </div>
             </div>
           </div>
@@ -2700,8 +2798,14 @@ pm2 save && pm2 startup`}</CodeBlock>
             background: `${T.blue}12`, border: `1px solid ${T.blue}33`, borderRadius: 8,
             padding: "10px 18px", fontSize: 11, color: T.blue, cursor: "pointer", fontFamily: "inherit", fontWeight: 700,
           }}>📋 Copiar UID (para o bot)</button>
-          <button onClick={() => {
-            if (window.confirm("⚠ Apagar TODAS as simulações e histórico?\nEsta ação é irreversível.")) {
+          <button onClick={() => setConfirmModal({
+            danger: true,
+            icon: "🗑",
+            title: "Apagar todas as simulações?",
+            message: "Vais apagar todo o histórico e posições simuladas e reiniciar com o capital configurado.",
+            lines: ["Esta ação é irreversível", "As posições abertas serão fechadas", "O saldo volta ao capital inicial"],
+            confirmLabel: "Sim, apagar tudo",
+            onConfirm: () => {
               setArchivedSims([]);
               if (user) import("./firebase.js").then(({ saveSetting }) =>
                 saveSetting(user.uid, "archivedSims", []).catch(()=>{}));
@@ -2712,8 +2816,8 @@ pm2 save && pm2 startup`}</CodeBlock>
               simBalRef.current = simCapital;
               setSimStartedAt(new Date());
               toast("🗑 Simulações apagadas e reiniciadas!", "success");
-            }
-          }} style={{
+            },
+          })} style={{
             background: `${T.red}12`, border: `1px solid ${T.red}33`, borderRadius: 8,
             padding: "10px 18px", fontSize: 12, color: T.red, cursor: "pointer", fontFamily: "inherit", fontWeight: 700,
           }}>🗑 Limpar Simulações</button>
@@ -2808,6 +2912,11 @@ JSON puro:
             if (op.acao === "COMPRAR" && op.urgencia === "AGORA" && op.confianca >= 75) {
               const a = assets.find(x => x.id === op.id);
               if (!a) continue;
+              // Limite de posições day trading
+              const pool = simMode ? simPosRef.current : positions;
+              const dtCount = pool.filter(p => p.stratId === "daytrading").length;
+              const maxDt = settingsRef.current?.maxDayTrading ?? 5;
+              if (dtCount >= maxDt) { continue; }
               const price = mktData[op.id]?.price || a.price;
               const units = +(dtAmount / price).toFixed(7);
               const sl    = +(price * (1 - dtMaxLoss    / 100)).toFixed(2);
@@ -3324,17 +3433,22 @@ JSON puro:
             onClick={(e) => {
               e.stopPropagation();
               if (simMode) {
-                const ok = window.confirm(
-                  "⚠️ ATENÇÃO — Modo LIVE\n\n" +
-                  "Em modo LIVE os trades serão executados com dinheiro REAL.\n\n" +
-                  "Confirmas que tens a corretora (Alpaca/IBKR) configurada?\n\n" +
-                  "(Podes voltar a Simulação a qualquer momento)"
-                );
-                if (ok) {
-                  setSimMode(false);
-                  simModeRef.current = false;
-                  toast("● Modo LIVE ativado — dinheiro real", "warn");
-                }
+                setConfirmModal({
+                  danger: true,
+                  title: "Ativar modo LIVE?",
+                  message: "Em modo LIVE os trades são executados com dinheiro REAL na tua corretora.",
+                  lines: [
+                    "Precisas da corretora (Alpaca/IBKR) configurada e com saldo",
+                    "Perdas em modo LIVE são dinheiro real perdido",
+                    "Podes voltar a Simulação a qualquer momento",
+                  ],
+                  confirmLabel: "Ativar LIVE",
+                  onConfirm: () => {
+                    setSimMode(false);
+                    simModeRef.current = false;
+                    toast("● Modo LIVE ativado — dinheiro real", "warn");
+                  },
+                });
               } else {
                 setSimMode(true);
                 simModeRef.current = true;
@@ -3423,9 +3537,9 @@ JSON puro:
                   {strategies.filter(s => s.ativo).length}
                 </span>
               )}
-              {item.id === "portfolio" && (positions.length + simPositions.length) > 0 && (
+              {item.id === "portfolio" && activePositions.length > 0 && (
                 <span style={{ marginLeft: "auto", background: T.green, color: "#000", borderRadius: 99, width: 18, height: 18, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 10, fontWeight: 700 }}>
-                  {positions.length + simPositions.length}
+                  {activePositions.length}
                 </span>
               )}
             </div>
@@ -3469,7 +3583,7 @@ JSON puro:
           {NAV.map(item => {
             const active = tab === item.id;
             const badge = item.id === "strategies" ? strategies.filter(s => s.ativo).length
-                        : item.id === "portfolio"  ? (positions.length + simPositions.length)
+                        : item.id === "portfolio"  ? activePositions.length
                         : 0;
             return (
               <div key={item.id} onClick={() => { setTab(item.id); window.scrollTo(0,0); }} style={{
@@ -3492,6 +3606,69 @@ JSON puro:
             );
           })}
         </nav>
+      )}
+
+      {/* ── MODAL DE CONFIRMAÇÃO BONITO ── */}
+      {confirmModal && (
+        <div style={{
+          position: "fixed", inset: 0, background: "rgba(0,0,0,0.78)",
+          display: "flex", alignItems: "center", justifyContent: "center",
+          zIndex: 7000, backdropFilter: "blur(8px)", padding: 16,
+          animation: "fadeIn 0.2s ease",
+        }} onClick={() => setConfirmModal(null)}>
+          <div onClick={e => e.stopPropagation()} style={{
+            background: T.base,
+            border: `1px solid ${confirmModal.danger ? T.red : T.accent}44`,
+            borderRadius: 18, padding: isMobile ? "26px 22px" : "32px 36px",
+            width: isMobile ? "calc(100vw - 32px)" : 460, maxWidth: "calc(100vw - 32px)",
+            boxShadow: `0 20px 80px ${confirmModal.danger ? T.red : T.accent}22`,
+          }}>
+            <div style={{ fontSize: 38, marginBottom: 14, textAlign: "center" }}>
+              {confirmModal.danger ? "⚠️" : confirmModal.icon || "❓"}
+            </div>
+            <div style={{ fontSize: 19, fontWeight: 800, textAlign: "center", marginBottom: 10, letterSpacing: "-0.01em" }}>
+              {confirmModal.title}
+            </div>
+            {confirmModal.message && (
+              <div style={{ fontSize: 13, color: T.muted, textAlign: "center", lineHeight: 1.6, marginBottom: confirmModal.lines ? 16 : 24 }}>
+                {confirmModal.message}
+              </div>
+            )}
+            {confirmModal.lines && (
+              <div style={{
+                background: `${confirmModal.danger ? T.red : T.accent}0c`,
+                border: `1px solid ${confirmModal.danger ? T.red : T.accent}22`,
+                borderRadius: 12, padding: "14px 16px", marginBottom: 24,
+              }}>
+                {confirmModal.lines.map((line, i) => (
+                  <div key={i} style={{ fontSize: 12, color: T.text, lineHeight: 1.7, display: "flex", gap: 8, alignItems: "flex-start" }}>
+                    <span style={{ color: confirmModal.danger ? T.red : T.accent, flexShrink: 0 }}>•</span>
+                    <span>{line}</span>
+                  </div>
+                ))}
+              </div>
+            )}
+            <div style={{ display: "flex", gap: 10 }}>
+              <button onClick={() => setConfirmModal(null)} style={{
+                flex: 1, background: "rgba(255,255,255,0.05)", border: `1px solid ${T.border}`,
+                borderRadius: 11, padding: "13px", fontSize: 13, color: T.muted,
+                cursor: "pointer", fontFamily: "inherit", fontWeight: 700,
+              }}>{confirmModal.cancelLabel || "Cancelar"}</button>
+              <button onClick={() => {
+                const fn = confirmModal.onConfirm;
+                setConfirmModal(null);
+                fn?.();
+              }} style={{
+                flex: 1.4,
+                background: confirmModal.danger ? `${T.red}1e` : `${T.green}1e`,
+                border: `1px solid ${confirmModal.danger ? T.red : T.green}55`,
+                borderRadius: 11, padding: "13px", fontSize: 13,
+                color: confirmModal.danger ? T.red : T.green,
+                cursor: "pointer", fontFamily: "inherit", fontWeight: 800,
+              }}>{confirmModal.confirmLabel || "Confirmar"}</button>
+            </div>
+          </div>
+        </div>
       )}
 
       {/* TOASTS */}
@@ -3568,31 +3745,73 @@ JSON puro:
             />
             <span style={{ fontSize: 9, color: T.muted, marginLeft: "auto" }}>↵ para reiniciar</span>
           </div>
-          {/* Stats — inclui P&L não realizado das posições abertas */}
-          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 8 }}>
-            {(() => {
-              const unrealSim = simPositions.reduce((sum, pos) => {
-                const a = assets.find(x => x.id === pos.assetId);
-                return sum + (a ? (a.price - pos.entryPrice) * pos.units : 0);
-              }, 0);
-              const totalSim = simBalance + simPositions.reduce((s,p) => s+p.amount, 0) + unrealSim;
-              const pnlTotal = totalSim - simCapital;
-              const roiTotal = simCapital > 0 ? (pnlTotal / simCapital) * 100 : 0;
-              return [
-                { l: "Saldo Livre",   v: `€${simBalance.toFixed(2)}`,                                 c: T.text },
-                { l: "P&L Total",     v: `${sign(pnlTotal)}€${Math.abs(pnlTotal).toFixed(2)}`,        c: pnlTotal>=0?T.green:T.red },
-                { l: "ROI",           v: `${sign(roiTotal)}${Math.abs(roiTotal).toFixed(1)}%`,         c: pnlTotal>=0?T.green:T.red },
-                { l: "Posições",      v: simPositions.length,                                          c: T.accent },
-                { l: "Trades Fech.", v: simClosed.length,                                              c: T.muted },
-                { l: "Win Rate",      v: simClosed.length ? `${(simClosed.filter(t=>t.pnl>0).length/simClosed.length*100).toFixed(0)}%`:"—", c: T.gold },
-              ];
-            })().map(s => (
-              <div key={s.l} style={{ background: "rgba(255,255,255,0.04)", borderRadius: 7, padding: "7px 9px" }}>
-                <div style={{ fontSize: 8, color: T.muted, letterSpacing: "0.1em", textTransform: "uppercase", marginBottom: 3 }}>{s.l}</div>
-                <div style={{ fontSize: 13, fontWeight: 700, color: s.c }}>{s.v}</div>
-              </div>
-            ))}
-          </div>
+          {/* Stats — TODAS as posições (manuais + estratégias + day trading) */}
+          {(() => {
+            const unrealSim = simPositions.reduce((sum, pos) => {
+              const a = assets.find(x => x.id === pos.assetId);
+              return sum + (a ? (a.price - pos.entryPrice) * pos.units : 0);
+            }, 0);
+            const capInvestido = simPositions.reduce((s,p) => s+p.amount, 0);
+            const totalSim = simBalance + capInvestido + unrealSim;
+            const pnlTotal = totalSim - simCapital;
+            const roiTotal = simCapital > 0 ? (pnlTotal / simCapital) * 100 : 0;
+            // Separar por origem
+            const porOrigem = { manual: 0, estrategia: 0, daytrading: 0 };
+            simPositions.forEach(p => {
+              if (p.stratId === "manual") porOrigem.manual++;
+              else if (p.stratId === "daytrading") porOrigem.daytrading++;
+              else porOrigem.estrategia++;
+            });
+            const pctUsado = simCapital > 0 ? (capInvestido / simCapital) * 100 : 0;
+            return (
+              <>
+                {/* Barra de capital usado */}
+                <div style={{ marginBottom: 10 }}>
+                  <div style={{ display: "flex", justifyContent: "space-between", fontSize: 9, color: T.muted, marginBottom: 4 }}>
+                    <span>CAPITAL EM USO: €{capInvestido.toFixed(2)} de €{simCapital}</span>
+                    <span>{pctUsado.toFixed(0)}%</span>
+                  </div>
+                  <div style={{ height: 6, background: "rgba(255,255,255,0.08)", borderRadius: 99, overflow: "hidden" }}>
+                    <div style={{ height: "100%", width: `${Math.min(100, pctUsado)}%`, background: pctUsado > 90 ? T.red : pctUsado > 70 ? T.gold : T.green, borderRadius: 99, transition: "width 0.3s" }} />
+                  </div>
+                  {pctUsado > 90 && <div style={{ fontSize: 8, color: T.red, marginTop: 3 }}>⚠ Capital quase esgotado — novas compras serão bloqueadas</div>}
+                </div>
+                {/* Valor total + ROI */}
+                <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 8, marginBottom: 8 }}>
+                  {[
+                    { l: "Valor Total",  v: `€${totalSim.toFixed(2)}`,                              c: T.text },
+                    { l: "P&L Total",    v: `${sign(pnlTotal)}€${Math.abs(pnlTotal).toFixed(2)}`,   c: pnlTotal>=0?T.green:T.red },
+                    { l: "ROI",          v: `${sign(roiTotal)}${Math.abs(roiTotal).toFixed(1)}%`,    c: pnlTotal>=0?T.green:T.red },
+                  ].map(s => (
+                    <div key={s.l} style={{ background: "rgba(255,255,255,0.04)", borderRadius: 7, padding: "7px 9px" }}>
+                      <div style={{ fontSize: 8, color: T.muted, letterSpacing: "0.1em", textTransform: "uppercase", marginBottom: 3 }}>{s.l}</div>
+                      <div style={{ fontSize: 13, fontWeight: 700, color: s.c }}>{s.v}</div>
+                    </div>
+                  ))}
+                </div>
+                {/* Saldo livre + posições por origem */}
+                <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 8, marginBottom: 8 }}>
+                  {[
+                    { l: "Saldo Livre", v: `€${simBalance.toFixed(2)}`, c: T.text },
+                    { l: "P&L Aberto",  v: `${sign(unrealSim)}€${Math.abs(unrealSim).toFixed(2)}`, c: unrealSim>=0?T.green:T.red },
+                    { l: "Win Rate",    v: simClosed.length ? `${(simClosed.filter(t=>t.pnl>0).length/simClosed.length*100).toFixed(0)}%`:"—", c: T.gold },
+                  ].map(s => (
+                    <div key={s.l} style={{ background: "rgba(255,255,255,0.04)", borderRadius: 7, padding: "7px 9px" }}>
+                      <div style={{ fontSize: 8, color: T.muted, letterSpacing: "0.1em", textTransform: "uppercase", marginBottom: 3 }}>{s.l}</div>
+                      <div style={{ fontSize: 13, fontWeight: 700, color: s.c }}>{s.v}</div>
+                    </div>
+                  ))}
+                </div>
+                {/* Posições abertas por origem */}
+                <div style={{ display: "flex", gap: 6, fontSize: 9, flexWrap: "wrap" }}>
+                  <span style={{ background: `${T.accent}18`, color: T.aLight, padding: "3px 8px", borderRadius: 99 }}>🎯 Estratégias: {porOrigem.estrategia}</span>
+                  <span style={{ background: `${T.gold}18`, color: T.gold, padding: "3px 8px", borderRadius: 99 }}>⚡ Day Trading: {porOrigem.daytrading}</span>
+                  <span style={{ background: "rgba(255,255,255,0.06)", color: T.muted, padding: "3px 8px", borderRadius: 99 }}>✋ Manuais: {porOrigem.manual}</span>
+                  <span style={{ background: "rgba(255,255,255,0.06)", color: T.muted, padding: "3px 8px", borderRadius: 99 }}>Fechados: {simClosed.length}</span>
+                </div>
+              </>
+            );
+          })()}
           {/* Mini trade log */}
           {simClosed.length > 0 && (
             <div style={{ marginTop: 10, maxHeight: 100, overflowY: "auto" }}>
@@ -3705,7 +3924,14 @@ JSON puro:
               <button onClick={() => {
                 setSimSummary(null);
                 if (simSummary.roi > 0 && simSummary.winRate >= 50) {
-                  if (window.confirm("Passar para modo LIVE com dinheiro real?")) setSimMode(false);
+setConfirmModal({
+                    danger: true,
+                    title: "Passar para LIVE?",
+                    message: "Vais começar a operar com dinheiro real com base nestes resultados de simulação.",
+                    lines: ["Resultados em simulação não garantem lucro real", "Começa com pouco capital"],
+                    confirmLabel: "Passar para LIVE",
+                    onConfirm: () => { setSimMode(false); simModeRef.current = false; },
+                  });
                 }
               }} style={{
                 flex: 1, background: `${T.green}18`, border: `1px solid ${T.green}44`,
