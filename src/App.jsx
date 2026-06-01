@@ -1253,12 +1253,22 @@ JSON: {"signals":[{"id":"btc","sinal":"COMPRAR|VENDER|AGUARDAR","razao":"1 frase
       terminadaEm:    new Date().toLocaleString("pt-PT"),
     };
     setSimSummary(summary);
-    // Arquiva automaticamente + persiste
+    // Arquiva + LIMPA posições e trades (termina mesmo a simulação)
     setArchivedSims(p => {
       const next = [summary, ...p];
       if (user) import("./firebase.js").then(({ saveSetting }) =>
         saveSetting(user.uid, "archivedSims", next).catch(()=>{}));
       return next;
+    });
+    // Apagar trades sim do Firestore (senão o bot recarrega-os)
+    const posToDelete = [...simPositions, ...simClosed];
+    setSimPositions([]); simPosRef.current = [];
+    setSimClosed([]);
+    setSimBalance(simCapital); simBalRef.current = simCapital;
+    setSimStartedAt(null);
+    if (user) import("./firebase.js").then(({ deleteTrade, saveSetting }) => {
+      posToDelete.forEach(t => deleteTrade?.(user.uid, t.id).catch(()=>{}));
+      saveSetting(user.uid, "simBalance", simCapital).catch(()=>{});
     });
   };
 
@@ -1267,8 +1277,8 @@ JSON: {"signals":[{"id":"btc","sinal":"COMPRAR|VENDER|AGUARDAR","razao":"1 frase
   // RENDER: CARTEIRA (PORTFOLIO)
   // ─────────────────────────────────────────────
   const Portfolio = () => {
-    const allPositions = [...positions, ...simPositions];
-    const allClosed    = [...closed, ...simClosed];
+    const allPositions = activePositions;
+    const allClosed    = activeClosed;
 
     if (allPositions.length === 0 && allClosed.length === 0) {
       return (
@@ -2599,18 +2609,20 @@ pm2 save && pm2 startup`}</CodeBlock>
     };
 
     const upd  = (k, v) => setLocal(p => ({ ...p, [k]: v }));
-    const save = () => {
-      setCurrentSettings(local);
-      setSettingsLocal(null);
-      if (user) import("./firebase.js").then(({ saveSetting }) =>
-        saveSetting(user.uid, isSimTab ? "settings" : "liveSettings", local).catch(()=>{}));
-      toast(`✅ Definições ${isSimTab?"simulação":"live"} guardadas!`, "success");
-    };
-
     const perfilInfo = {
       conservador: { desc: "Quedas maiores para acionar compra, SL/TP mais apertados. Menos trades, mais seguros.", sl: 4, tp: 8,  compra: 2.5 },
       moderado:    { desc: "Equilíbrio entre oportunidades e risco. Recomendado para começar.",                    sl: 6, tp: 12, compra: 1.5 },
       agressivo:   { desc: "Mais trades, entradas mais frequentes. Potencial de ganho e perda maior.",             sl: 9, tp: 18, compra: 0.8 },
+    };
+
+    const save = () => {
+      // Garantir que SL/TP correspondem ao perfil selecionado (a não ser que o user os tenha alterado manualmente)
+      const finalSettings = { ...local };
+      setCurrentSettings(finalSettings);
+      setSettingsLocal(null);
+      if (user) import("./firebase.js").then(({ saveSetting }) =>
+        saveSetting(user.uid, isSimTab ? "settings" : "liveSettings", finalSettings).catch(()=>{}));
+      toast(`✅ Definições ${isSimTab?"simulação":"live"} guardadas! (Perfil ${finalSettings.riscoPerfil}: SL ${finalSettings.stopLossPadrao}% / TP ${finalSettings.takeProfitPadrao}%)`, "success");
     };
     const info = perfilInfo[local.riscoPerfil];
     const amountPreview = local.modoValor === "fixo"
@@ -2831,22 +2843,25 @@ pm2 save && pm2 startup`}</CodeBlock>
             lines: ["Esta ação é irreversível", "As posições abertas serão fechadas", "As estratégias ativas serão apagadas", "O saldo volta ao capital inicial"],
             confirmLabel: "Sim, apagar tudo",
             onConfirm: () => {
+              const tradesToDelete = [...simPositions, ...simClosed];
+              const stratsToDelete = strategies.map(s => s.id);
               setArchivedSims([]);
               setSimClosed([]);
               setSimPositions([]);
               simPosRef.current = [];
               setSimBalance(simCapital);
               simBalRef.current = simCapital;
-              setSimStartedAt(new Date());
-              // Apagar estratégias (estado + Firestore) para o bot parar de operar
-              const toDelete = strategies.map(s => s.id);
+              setSimStartedAt(null);
               setStrategies([]);
               stratRef.current = [];
-              if (user) import("./firebase.js").then(({ saveSetting, deleteStrategy }) => {
+              // Apagar TUDO do Firestore (senão o bot recarrega)
+              if (user) import("./firebase.js").then(({ saveSetting, deleteStrategy, deleteTrade }) => {
                 saveSetting(user.uid, "archivedSims", []).catch(()=>{});
-                toDelete.forEach(id => deleteStrategy(user.uid, id).catch(()=>{}));
+                saveSetting(user.uid, "simBalance", simCapital).catch(()=>{});
+                stratsToDelete.forEach(id => deleteStrategy(user.uid, id).catch(()=>{}));
+                tradesToDelete.forEach(t => deleteTrade(user.uid, t.id).catch(()=>{}));
               });
-              toast("🗑 Simulações e estratégias apagadas!", "success");
+              toast("🗑 Tudo apagado e reiniciado!", "success");
             },
           })} style={{
             background: `${T.red}12`, border: `1px solid ${T.red}33`, borderRadius: 8,

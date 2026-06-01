@@ -60,6 +60,9 @@ export async function saveTrade(uid, trade) {
 export async function updateTrade(uid, id, updates) {
   await setDoc(userDoc(uid, "trades", id), { ...updates, updatedAt: serverTimestamp() }, { merge: true });
 }
+export async function deleteTrade(uid, id) {
+  await deleteDoc(userDoc(uid, "trades", id));
+}
 export function subscribeTrades(uid, callback) {
   const q = query(userCol(uid, "trades"), orderBy("savedAt", "desc"), limit(500));
   return onSnapshot(q, snap => callback(snap.docs.map(d => ({ ...d.data(), id: d.id }))));
