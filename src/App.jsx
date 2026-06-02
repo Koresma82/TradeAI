@@ -252,6 +252,7 @@ export default function TradeAI() {
   const [dtProfitTarget, setDtProfitTarget] = useState(6);    // % lucro alvo
   const [dtMaxLoss,    setDtMaxLoss]    = useState(3);        // % perda max por trade
   const [dtAmount,     setDtAmount]     = useState(100);      // € por operação
+  const [dtMinConf,    setDtMinConf]    = useState(75);       // % confiança mínima para auto-comprar
   const [dtDailyPnl,   setDtDailyPnl]  = useState(0);        // P&L do dia em €
   const dtTimerRef = useRef(null);                            // intervalo de scan
   const [histCat, setHistCat] = useState("Todos"); // categoria filtro histórico
@@ -341,10 +342,13 @@ export default function TradeAI() {
     if (!user || !dbLoaded) return;
     const t = setTimeout(() => {
       import("./firebase.js").then(({ saveSetting }) =>
-        saveSetting(user.uid, "dtState", { trades: dtTrades, dailyPnl: dtDailyPnl }).catch(()=>{}));
+        saveSetting(user.uid, "dtState", {
+          trades: dtTrades, dailyPnl: dtDailyPnl,
+          profitTarget: dtProfitTarget, maxLoss: dtMaxLoss, amount: dtAmount, minConf: dtMinConf,
+        }).catch(()=>{}));
     }, 1000);
     return () => clearTimeout(t);
-  }, [dtTrades, dtDailyPnl, user, dbLoaded]);
+  }, [dtTrades, dtDailyPnl, dtProfitTarget, dtMaxLoss, dtAmount, dtMinConf, user, dbLoaded]);
 
   useEffect(() => { simPosRef.current = simPositions; }, [simPositions]);
   useEffect(() => { simStartedRef.current = !!simStartedAt; }, [simStartedAt]);
@@ -991,12 +995,17 @@ JSON puro — inclui TODOS os ativos relevantes de TODAS as categorias:
             </div>
             <div className="resp-grid-2" style={{ display: "grid", gridTemplateColumns: "repeat(2,1fr)", gap: 12 }}>
               {myPositions.map(pos => {
-                const a      = assets.find(x => x.id === pos.assetId);
-                const price  = a?.price || pos.entryPrice;
+                const norm   = s => String(s || "").toLowerCase().trim();
+                const a      = assets.find(x => x.id === pos.assetId)
+                            || assets.find(x => norm(x.sym) === norm(pos.assetId))
+                            || assets.find(x => norm(x.sym) === norm(pos.assetSym))
+                            || assets.find(x => norm(x.name) === norm(pos.assetName));
+                const live   = mktData[a?.id] || {};
+                const price  = live.price ?? a?.price ?? pos.entryPrice;
                 const pnl    = (price - pos.entryPrice) * pos.units;
                 const pnlPct = pos.amount > 0 ? (pnl / pos.amount) * 100 : 0;
                 const col    = pnl >= 0 ? T.green : T.red;
-                const spark  = a?.hist?.slice(-50) || [];
+                const spark  = (live.sparkline?.length ? live.sparkline : a?.hist?.slice(-50)) || [];
                 const isSim  = pos.mode === "sim";
                 return (
                   <Glass key={pos.id} style={{ padding: "18px 20px 10px" }}
@@ -1010,14 +1019,14 @@ JSON puro — inclui TODOS os ativos relevantes de TODAS as categorias:
                             <div style={{ fontWeight: 700, fontSize: 14 }}>{a?.name || pos.assetName}</div>
                             <div style={{ display: "flex", gap: 6, marginTop: 2, alignItems: "center", flexWrap: "wrap" }}>
                               <Badge label={isSim ? "SIM" : "LIVE"} color={isSim ? T.gold : T.red} />
-                              <MarketBadge assetId={pos.assetId} />
+                              <MarketBadge assetId={a?.id || pos.assetId} />
                               <span style={{ fontSize: 9, color: T.muted }}>entrada ${pos.entryPrice.toFixed(2)}</span>
                             </div>
                           </div>
                         </div>
                       </div>
                       <div style={{ textAlign: "right" }}>
-                        <div style={{ fontSize: 20, fontWeight: 700 }}>${fmt(price, pos.assetId)}</div>
+                        <div style={{ fontSize: 20, fontWeight: 700 }}>${fmt(price, a?.id || pos.assetId)}</div>
                         <div style={{ fontSize: 18, fontWeight: 800, color: col }}>{sign(pnl)}€{Math.abs(pnl).toFixed(2)}</div>
                         <div style={{ fontSize: 11, color: col }}>{sign(pnlPct)}{Math.abs(pnlPct).toFixed(2)}%</div>
                       </div>
@@ -1055,7 +1064,7 @@ JSON puro — inclui TODOS os ativos relevantes de TODAS as categorias:
                     </div>
                     {/* Botão vender — só posições manuais */}
                     {pos.stratId === "manual" && (() => {
-                      const open = isMarketOpen(pos.assetId);
+                      const open = isMarketOpen(a?.id || pos.assetId);
                       return (
                         <button
                           onClick={() => open && closePositionById(pos.id)}
@@ -1068,7 +1077,7 @@ JSON puro — inclui TODOS os ativos relevantes de TODAS as categorias:
                             fontSize: 12, fontWeight: 700, fontFamily: "inherit",
                             cursor: open ? "pointer" : "not-allowed",
                           }}>
-                          {open ? `▼ Vender ${a?.sym || ""} @ $${fmt(price, pos.assetId)}` : "⏸ Mercado fechado — não dá para vender agora"}
+                          {open ? `▼ Vender ${a?.sym || ""} @ $${fmt(price, a?.id || pos.assetId)}` : "⏸ Mercado fechado — não dá para vender agora"}
                         </button>
                       );
                     })()}
@@ -1746,15 +1755,19 @@ JSON: {"signals":[{"id":"btc","sinal":"COMPRAR|VENDER|AGUARDAR","razao":"1 frase
             </div>
             <div style={{ display:"flex", flexDirection:"column", gap:12 }}>
               {allPositions.map(pos => {
-                const a       = assets.find(x=>x.id===pos.assetId);
+                const norm    = s => String(s || "").toLowerCase().trim();
+                const a       = assets.find(x=>x.id===pos.assetId)
+                             || assets.find(x=>norm(x.sym)===norm(pos.assetId))
+                             || assets.find(x=>norm(x.sym)===norm(pos.assetSym))
+                             || assets.find(x=>norm(x.name)===norm(pos.assetName));
                 if (!a) return null;
-                const live    = mktData[pos.assetId] || {};
+                const live    = mktData[a.id] || {};
                 const price   = live.price ?? a.price;
                 const pnl     = (price - pos.entryPrice) * pos.units;
                 const pnlPct  = (pnl / pos.amount) * 100;
                 const col     = pnl>=0 ? T.green : T.red;
                 const spark   = live.sparkline?.length ? live.sparkline : a.hist.slice(-60);
-                const open    = isMarketOpen(pos.assetId);
+                const open    = isMarketOpen(a.id);
                 const mhours  = MARKET_HOURS[pos.assetId];
 
                 return (
@@ -3245,15 +3258,15 @@ pm2 save && pm2 startup`}</CodeBlock>
           <div style={{ fontSize: 11, color: T.aLight, fontWeight: 700, marginBottom: 10 }}>Máximo de posições abertas por tipo</div>
           <div className="resp-grid" style={{ display: "grid", gridTemplateColumns: "repeat(3,1fr)", gap: 12, marginBottom: 16 }}>
             {[
-              { k: "maxManuais",     l: "✋ Manuais",     desc: "Compras tuas em Mercados" },
-              { k: "maxEstrategias", l: "🎯 Estratégias", desc: "Trades automáticos do bot" },
-              { k: "maxDayTrading",  l: "⚡ Day Trading",  desc: "Scalping rápido" },
+              { k: "maxManuais",     l: "✋ Manuais",     desc: "Compras tuas em Mercados", max: 20 },
+              { k: "maxEstrategias", l: "🎯 Estratégias", desc: "Trades automáticos do bot", max: 20 },
+              { k: "maxDayTrading",  l: "⚡ Day Trading",  desc: "Scalping rápido", max: 50 },
             ].map(f => (
               <div key={f.k} style={{ background: "rgba(0,0,0,0.18)", borderRadius: 10, padding: "14px 16px" }}>
                 <div style={{ fontSize: 11, fontWeight: 600, marginBottom: 3 }}>{f.l}</div>
                 <div style={{ fontSize: 9, color: T.muted, marginBottom: 10, lineHeight: 1.4 }}>{f.desc}</div>
                 <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-                  <input type="range" min={1} max={20} value={local[f.k] ?? 5} onChange={e => upd(f.k, +e.target.value)} style={{ flex: 1, accentColor: T.accent }} />
+                  <input type="range" min={1} max={f.max} value={local[f.k] ?? 5} onChange={e => upd(f.k, +e.target.value)} style={{ flex: 1, accentColor: T.accent }} />
                   <div style={{ fontSize: 16, fontWeight: 700, color: T.aLight, minWidth: 24, textAlign: "right" }}>{local[f.k] ?? 5}</div>
                 </div>
               </div>
@@ -3537,7 +3550,7 @@ pm2 save && pm2 startup`}</CodeBlock>
           const live = mktData[a.id] || {};
           const p    = live.price ?? a.price;
           const chg  = live.change ?? a.change;
-          return `${a.name}(${a.sym}): $${fmt(p, a.id)} variação24h=${chg.toFixed(2)}%`;
+          return `id=${a.id} · ${a.name}(${a.sym}): $${fmt(p, a.id)} variação24h=${chg.toFixed(2)}%`;
         }).join("\n");
 
         const dtTradesInfo = dtTrades.slice(0, 8).map(t =>
@@ -3571,6 +3584,8 @@ Com base no momento atual (hora do dia, volatilidade, tendência), diz-me:
 
 Devolve entre 4 e 6 oportunidades no array (as melhores dos ativos acima). Sê direto — não dizes "pode subir", dizes "vai subir X% até às HH:MM" ou "não invistas agora".
 
+IMPORTANTE: no campo "id" usa SEMPRE o valor exato de id= indicado acima (ex: "silver", "gold", "eurusd"), nunca o símbolo.
+
 JSON puro:
 {
   "resumo": "análise geral do mercado AGORA em 1 frase direta pt",
@@ -3578,7 +3593,7 @@ JSON puro:
   "melhorOportunidade": "nome do melhor ativo para day trading agora",
   "oportunidades": [
     {
-      "id": "xag",
+      "id": "silver",
       "nome": "Prata",
       "icone": "🥈",
       "acao": "COMPRAR|VENDER|AGUARDAR",
@@ -3601,20 +3616,24 @@ JSON puro:
         // Auto-executar se urgência = AGORA e ação = COMPRAR e modo activo
         if (dtActive && result.oportunidades) {
           for (const op of result.oportunidades) {
-            if (op.acao === "COMPRAR" && op.urgencia === "AGORA" && op.confianca >= 75) {
-              const a = assets.find(x => x.id === op.id);
+            if (op.acao === "COMPRAR" && op.urgencia === "AGORA" && op.confianca >= dtMinConf) {
+              const norm = s => String(s || "").toLowerCase().trim();
+              const a = assets.find(x => x.id === op.id)
+                     || assets.find(x => norm(x.sym) === norm(op.id))
+                     || assets.find(x => norm(x.name) === norm(op.nome))
+                     || assets.find(x => norm(x.sym) === norm(op.nome));
               if (!a) continue;
               // Limite de posições day trading
               const pool = simMode ? simPosRef.current : positions;
               const dtCount = pool.filter(p => p.stratId === "daytrading").length;
               const maxDt = settingsRef.current?.maxDayTrading ?? 5;
               if (dtCount >= maxDt) { continue; }
-              const price = mktData[op.id]?.price || a.price;
+              const price = mktData[a.id]?.price || a.price;
               const units = +(dtAmount / price).toFixed(7);
               const sl    = +(price * (1 - dtMaxLoss    / 100)).toFixed(2);
               const tp    = +(price * (1 + dtProfitTarget / 100)).toFixed(2);
               const trade = {
-                id: uid(), assetId: op.id, assetName: op.nome, assetSym: a.sym,
+                id: uid(), assetId: a.id, assetName: a.name, assetSym: a.sym,
                 action: "COMPRAR", entryPrice: price, units, amount: dtAmount,
                 sl, tp, strategy: `DayTrade — ${op.previsao?.slice(0,40)}`,
                 openedAt: new Date().toLocaleTimeString("pt-PT"), status: "ABERTA",
@@ -3743,10 +3762,11 @@ JSON puro:
           </div>
 
           {/* Config row */}
-          <div style={{ display:"grid", gridTemplateColumns:"repeat(4,1fr)", gap:12, marginTop:18 }}>
+          <div style={{ display:"grid", gridTemplateColumns:"repeat(5,1fr)", gap:12, marginTop:18 }}>
             {[
               { l:"Meta de Lucro (%)", key:"dtProfitTarget", val:dtProfitTarget, set:setDtProfitTarget, min:1, max:25, c:T.green },
               { l:"Stop Loss (%)",     key:"dtMaxLoss",      val:dtMaxLoss,      set:setDtMaxLoss,      min:1, max:15, c:T.red   },
+              { l:"Confiança Mín. (%)",key:"dtMinConf",      val:dtMinConf,      set:setDtMinConf,      min:50, max:95, c:T.gold  },
               { l:"€ por Trade",       key:"dtAmount",       val:dtAmount,       set:setDtAmount,       min:10, max:5000, c:T.aLight, isNum:true },
             ].map(f => (
               <div key={f.key} style={{ background:"rgba(0,0,0,0.2)", borderRadius:10, padding:"12px 14px" }}>
@@ -3816,12 +3836,18 @@ JSON puro:
             {/* Cards de oportunidades */}
             <div className="resp-grid-2" style={{ display:"grid", gridTemplateColumns:"repeat(2,1fr)", gap:12 }}>
               {(dtScanResult.oportunidades || []).map(op => {
-                const a    = assets.find(x => x.id === op.id);
-                const live = mktData[op.id] || {};
+                const a    = (() => {
+                  const norm = s => String(s || "").toLowerCase().trim();
+                  return assets.find(x => x.id === op.id)
+                      || assets.find(x => norm(x.sym) === norm(op.id))
+                      || assets.find(x => norm(x.name) === norm(op.nome))
+                      || assets.find(x => norm(x.sym) === norm(op.nome));
+                })();
+                const live = mktData[a?.id] || {};
                 const price = live.price ?? a?.price ?? op.entrada;
                 const col   = op.acao==="COMPRAR" ? T.green : op.acao==="VENDER" ? T.red : T.gold;
                 const urgC  = op.urgencia==="AGORA" ? T.red : op.urgencia==="HOJE" ? T.gold : T.muted;
-                const alreadyOpen = dtTrades.some(t => t.assetId===op.id && t.status==="ABERTA");
+                const alreadyOpen = dtTrades.some(t => t.assetId===(a?.id||op.id) && t.status==="ABERTA");
                 return (
                   <Glass key={op.id} style={{ padding:"18px 20px", position:"relative" }}>
                     {/* Urgência badge */}
@@ -3864,12 +3890,12 @@ JSON puro:
                     {/* Botão */}
                     {op.acao === "COMPRAR" && !alreadyOpen && (
                       <button onClick={() => {
-                        const price2 = mktData[op.id]?.price || a?.price || op.entrada;
+                        const price2 = mktData[a?.id]?.price || a?.price || op.entrada;
                         const units2 = +(dtAmount / price2).toFixed(7);
                         const sl2    = +(price2 * (1 - dtMaxLoss    /100)).toFixed(2);
                         const tp2    = +(price2 * (1 + dtProfitTarget/100)).toFixed(2);
                         const trade  = {
-                          id: uid(), assetId:op.id, assetName:op.nome, assetSym:a?.sym||op.id,
+                          id: uid(), assetId:a?.id||op.id, assetName:a?.name||op.nome, assetSym:a?.sym||op.id,
                           action:"COMPRAR", entryPrice:price2, units:units2, amount:dtAmount,
                           sl:sl2, tp:tp2, strategy:`DayTrade`,
                           openedAt:new Date().toLocaleTimeString("pt-PT"), status:"ABERTA",
@@ -4057,6 +4083,10 @@ JSON puro:
         if (val && typeof val === "object") {
           if (Array.isArray(val.trades)) setDtTrades(val.trades);
           if (typeof val.dailyPnl === "number") setDtDailyPnl(val.dailyPnl);
+          if (typeof val.profitTarget === "number") setDtProfitTarget(val.profitTarget);
+          if (typeof val.maxLoss === "number") setDtMaxLoss(val.maxLoss);
+          if (typeof val.amount === "number") setDtAmount(val.amount);
+          if (typeof val.minConf === "number") setDtMinConf(val.minConf);
         }
       });
       unsubBot = subSet(uid2, "botStatus", (val) => {

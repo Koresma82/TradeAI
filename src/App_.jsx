@@ -37,8 +37,9 @@ async function callGroq({ messages, system, max_tokens = 1500, temperature = 0.3
   if (!res.ok) throw new Error(data?.error || "Erro Groq");
   const text  = data.content?.[0]?.text || "{}";
   const cost  = data._cost || 0;
+  const tokens = data.usage?.total_tokens || 0;
   const result = JSON.parse(text.replace(/```json|```/g, "").trim());
-  return { result, cost };
+  return { result, cost, tokens };
 }
 
 // ─── TOKENS ──────────────────────────────────────────────────────────────────
@@ -158,6 +159,26 @@ function Badge({ label, color = T.accent }) {
       borderRadius: 99, padding: "2px 10px", fontSize: 10, fontWeight: 700,
       letterSpacing: "0.07em", whiteSpace: "nowrap",
     }}>{label}</span>
+  );
+}
+
+// Pílula que mostra se o mercado de um ativo está aberto ou fechado agora
+function MarketBadge({ assetId, showLabel = false }) {
+  const open = isMarketOpen(assetId);
+  const c = open ? T.green : T.muted;
+  const hours = MARKET_HOURS[assetId];
+  return (
+    <span title={hours?.label || ""} style={{
+      display: "inline-flex", alignItems: "center", gap: 5,
+      background: `${c}14`, color: c, border: `1px solid ${c}33`,
+      borderRadius: 99, padding: "2px 9px", fontSize: 9, fontWeight: 700,
+      whiteSpace: "nowrap", cursor: hours?.label ? "help" : "default",
+    }}>
+      <span style={{ width: 6, height: 6, borderRadius: "50%", background: c,
+        animation: open ? "pulse 1.4s infinite" : "none", display: "inline-block" }} />
+      {open ? "Mercado aberto" : "Mercado fechado"}
+      {showLabel && hours?.label && !hours.always && <span style={{ opacity: 0.7, fontWeight: 500 }}>· {hours.label}</span>}
+    </span>
   );
 }
 
@@ -284,6 +305,7 @@ export default function TradeAI() {
     trailingStop:        false,  // protege lucros movendo o stop-loss para cima
     trailingStopPct:     4,      // distância (%) do trailing stop abaixo do pico
     aiExitOnFlip:        true,   // sair quando a IA muda de COMPRAR para VENDER
+    aiSignalsMin:        15,     // intervalo (min) entre análises AI do bot — poupa tokens
   });
   const balRef    = useRef(INIT_BAL);
   const stratRef  = useRef([]);
@@ -986,8 +1008,9 @@ JSON puro — inclui TODOS os ativos relevantes de TODAS as categorias:
                           <span style={{ fontSize: 20 }}>{a?.icon || "◆"}</span>
                           <div>
                             <div style={{ fontWeight: 700, fontSize: 14 }}>{a?.name || pos.assetName}</div>
-                            <div style={{ display: "flex", gap: 6, marginTop: 2 }}>
+                            <div style={{ display: "flex", gap: 6, marginTop: 2, alignItems: "center", flexWrap: "wrap" }}>
                               <Badge label={isSim ? "SIM" : "LIVE"} color={isSim ? T.gold : T.red} />
+                              <MarketBadge assetId={pos.assetId} />
                               <span style={{ fontSize: 9, color: T.muted }}>entrada ${pos.entryPrice.toFixed(2)}</span>
                             </div>
                           </div>
@@ -1030,6 +1053,25 @@ JSON puro — inclui TODOS os ativos relevantes de TODAS as categorias:
                         </div>
                       ))}
                     </div>
+                    {/* Botão vender — só posições manuais */}
+                    {pos.stratId === "manual" && (() => {
+                      const open = isMarketOpen(pos.assetId);
+                      return (
+                        <button
+                          onClick={() => open && closePositionById(pos.id)}
+                          disabled={!open}
+                          style={{
+                            width: "100%", marginTop: 10, padding: "9px 0", borderRadius: 8,
+                            border: `1px solid ${open ? T.red : T.border}`,
+                            background: open ? `${T.red}14` : "rgba(255,255,255,0.03)",
+                            color: open ? T.red : T.muted,
+                            fontSize: 12, fontWeight: 700, fontFamily: "inherit",
+                            cursor: open ? "pointer" : "not-allowed",
+                          }}>
+                          {open ? `▼ Vender ${a?.sym || ""} @ $${fmt(price, pos.assetId)}` : "⏸ Mercado fechado — não dá para vender agora"}
+                        </button>
+                      );
+                    })()}
                   </Glass>
                 );
               })}
@@ -1378,6 +1420,7 @@ JSON puro:
   const [orderModal,    setOrderModal]    = useState(null);
   const [orderAmount,   setOrderAmount]   = useState(100);
   const [aiCost,        setAiCost]        = useState(0);
+  const [groqTokens,    setGroqTokens]    = useState(0); // tokens Groq usados nesta sessão (app)
   const [aiProvider,    setAiProvider]    = useState("auto"); // "auto"|"claude"|"groq"
   const [defTab,        setDefTab]        = useState("sim");  // settings sub-tab (top-level p/ sobreviver re-render)
   const [brokerTab,     setBrokerTab]     = useState("alpaca"); // guia: corretora
@@ -1394,6 +1437,9 @@ JSON puro:
 
   // ── Market quick signals (AI cada 5 min) ──────────────────────────────────
   const fetchMarketSignals = useCallback(async () => {
+    // Se o bot 24/7 está ativo, ele já gera os sinais — a app lê-os do Firestore
+    // (poupa tokens e evita análises duplicadas).
+    if (botActiveRef.current) return;
     try {
       const lines = ASSETS.map(a => {
         const live = assRef.current.find(x => x.id === a.id);
@@ -1453,6 +1499,47 @@ JSON: {"signals":[{"id":"btc","sinal":"COMPRAR|VENDER|AGUARDAR","razao":"1 frase
     const iv = setInterval(fetchMarkets, 30000); // refresh 30s
     return () => clearInterval(iv);
   }, [fetchMarkets]);
+
+  // Fechar qualquer posição aberta pelo seu id (usado pelos botões "Vender" no Dashboard)
+  const closePositionById = (posId) => {
+    const isSim = simModeRef.current;
+    const pool  = isSim ? simPosRef.current : positions;
+    const pos   = pool.find(p => p.id === posId);
+    if (!pos) { toast("Posição já não está aberta", "warn"); return; }
+    const a     = assets.find(x => x.id === pos.assetId);
+    // Bloquear venda se o mercado desse ativo estiver fechado
+    if (!isMarketOpen(pos.assetId)) {
+      toast(`⏸ Mercado de ${a?.sym || pos.assetId} fechado — não é possível vender agora`, "warn");
+      return;
+    }
+    const price = a?.price || pos.entryPrice;
+    const pnl   = (price - pos.entryPrice) * pos.units;
+    const closedTrade = { ...pos, status: "MANUAL", closePrice: price, closedAt: new Date().toLocaleTimeString("pt-PT"), pnl };
+    if (isSim) {
+      setSimClosed(p => [closedTrade, ...p]);
+      setSimPositions(p => { const next = p.filter(x => x.id !== posId); simPosRef.current = next; return next; });
+      setSimBalance(b => {
+        const n = +(b + pos.amount + pnl).toFixed(2); simBalRef.current = n;
+        if (user) import("./firebase.js").then(({ updateTrade, saveSetting }) => {
+          updateTrade(user.uid, posId, { status: "MANUAL", closePrice: price, pnl, closedAt: closedTrade.closedAt }).catch(()=>{});
+          saveSetting(user.uid, "simBalance", n).catch(()=>{});
+        }).catch(()=>{});
+        return n;
+      });
+    } else {
+      setClosed(p => [closedTrade, ...p]);
+      setPositions(p => p.filter(x => x.id !== posId));
+      setBalance(b => {
+        const n = +(b + pos.amount + pnl).toFixed(2); balRef.current = n;
+        if (user) import("./firebase.js").then(({ updateTrade, saveSetting }) => {
+          updateTrade(user.uid, posId, { status: "MANUAL", closePrice: price, pnl, closedAt: closedTrade.closedAt }).catch(()=>{});
+          saveSetting(user.uid, "liveBalance", n).catch(()=>{});
+        }).catch(()=>{});
+        return n;
+      });
+    }
+    toast(`${pnl >= 0 ? "✅" : "🛑"} Vendido ${a?.sym} · P&L ${sign(pnl)}€${Math.abs(pnl).toFixed(2)}`, pnl >= 0 ? "success" : "warn");
+  };
 
   // Quick order from Markets tab
   const executeQuickOrder = (assetId, side, explicitAmount) => {
@@ -2610,7 +2697,7 @@ JSON: {"signals":[{"id":"btc","sinal":"COMPRAR|VENDER|AGUARDAR","razao":"1 frase
             <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 11, minWidth: 820 }}>
               <thead>
                 <tr style={{ borderBottom: `1px solid ${T.border}` }}>
-                  {["Ativo","Cat.","Estratégia","Abertura","Entrada","Preço Atual","Investido","SL","TP","P&L","Status"].map(h => (
+                  {["Ativo","Cat.","Estratégia","Abertura","Entrada","Preço Atual","Investido","SL","TP","P&L","Status","Mercado"].map(h => (
                     <th key={h} style={{ padding: "8px 10px", textAlign: "left", color: T.muted, fontSize: 8, letterSpacing: "0.1em", textTransform: "uppercase", fontWeight: 600 }}>{h}</th>
                   ))}
                 </tr>
@@ -2647,6 +2734,9 @@ JSON: {"signals":[{"id":"btc","sinal":"COMPRAR|VENDER|AGUARDAR","razao":"1 frase
                             : (t.pnl || 0) >= 0 ? T.green : T.red;
                           return <Badge label={lbl} color={c} />;
                         })()}
+                      </td>
+                      <td style={{ padding: "9px 10px" }}>
+                        {isOpen ? <MarketBadge assetId={t.assetId} /> : <span style={{ color: T.muted, fontSize: 10 }}>—</span>}
                       </td>
                     </tr>
                   );
@@ -3000,7 +3090,7 @@ pm2 save && pm2 startup`}</CodeBlock>
     const currentSettings      = isSimTab ? settings : liveSettings;
     const setCurrentSettings   = isSimTab ? setSettings : setLiveSettings;
     // local edit state vive no top-level (settingsLocal) para sobreviver ao re-render de 2s
-    const brainDefaults = { aiBrain: false, aiBrainConfianca: 78, trailingStop: false, trailingStopPct: 4, aiExitOnFlip: true };
+    const brainDefaults = { aiBrain: false, aiBrainConfianca: 78, trailingStop: false, trailingStopPct: 4, aiExitOnFlip: true, aiSignalsMin: 15 };
     const local = { ...brainDefaults, ...(settingsLocal || currentSettings) };
     const setLocal = (updater) => {
       setSettingsLocal(prev => {
@@ -3235,9 +3325,46 @@ pm2 save && pm2 startup`}</CodeBlock>
         <Glass style={{ padding: "22px 24px", background: `${T.accent}06`, border: `1px solid ${T.accent}22` }}>
           <div style={{ fontSize: 13, fontWeight: 700, color: T.aLight, marginBottom: 4 }}>🤖 Automação Avançada com IA</div>
           <div style={{ fontSize: 11, color: T.muted, marginBottom: 18, lineHeight: 1.55 }}>
-            A IA decide compras e vendas com base nos seus próprios sinais de mercado (atualizados a cada 5 min).
+            A IA decide compras e vendas com base nos seus próprios sinais de mercado.
             Funciona com a simulação iniciada ou com o Auto-Investir ligado.
           </div>
+
+          {/* ── Monitor de consumo de IA (Groq) ── */}
+          {(() => {
+            const LIMITE_DIA = 100000; // limite diário tokens (plano gratuito Groq)
+            const usado = groqTokens;
+            const pct = Math.min(100, (usado / LIMITE_DIA) * 100);
+            const cor = pct >= 85 ? T.red : pct >= 60 ? T.gold : T.green;
+            // estimativa de tokens/scan e quantos scans restam
+            const porScan = 900; // ~tokens por scan com modelo 8b
+            const restantes = Math.max(0, Math.floor((LIMITE_DIA - usado) / porScan));
+            return (
+              <div style={{ background: "rgba(0,0,0,0.22)", borderRadius: 10, padding: "16px 18px", marginBottom: 14, border: `1px solid ${cor}22` }}>
+                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 4 }}>
+                  <div style={{ fontSize: 12, fontWeight: 700 }}>📊 Consumo de IA (Groq) — esta sessão</div>
+                  <span style={{ fontSize: 11, fontWeight: 800, color: cor }}>{pct.toFixed(1)}%</span>
+                </div>
+                <div style={{ fontSize: 10, color: T.muted, marginBottom: 10, lineHeight: 1.5 }}>
+                  Tokens contados desde que abriste a app. O limite gratuito da Groq é {(LIMITE_DIA/1000).toFixed(0)}k tokens/dia (partilhado entre app e bot).
+                </div>
+                <div style={{ height: 8, background: "rgba(255,255,255,0.08)", borderRadius: 99, overflow: "hidden", marginBottom: 6 }}>
+                  <div style={{ height: "100%", width: `${pct}%`, background: cor, borderRadius: 99, transition: "width 0.3s" }} />
+                </div>
+                <div style={{ display: "flex", justifyContent: "space-between", fontSize: 9, color: T.muted }}>
+                  <span>{usado.toLocaleString("pt-PT")} tokens usados</span>
+                  <span>~{restantes} scans restantes hoje</span>
+                </div>
+                {pct >= 85 && (
+                  <div style={{ fontSize: 10, color: T.red, marginTop: 8 }}>
+                    ⚠ Estás perto do limite diário. Aumenta o intervalo da análise AI abaixo, ou aguarda a meia-noite UTC para reiniciar.
+                  </div>
+                )}
+                <div style={{ fontSize: 9, color: T.muted, marginTop: 8, fontStyle: "italic" }}>
+                  Nota: este contador mede só o que a app consome. O consumo do bot 24/7 vê-se no painel da Groq em console.groq.com.
+                </div>
+              </div>
+            );
+          })()}
 
           {/* Cérebro AI */}
           <div style={{ background: "rgba(0,0,0,0.18)", borderRadius: 10, padding: "16px 18px", marginBottom: 14 }}>
@@ -3307,9 +3434,26 @@ pm2 save && pm2 startup`}</CodeBlock>
               </div>
             </div>
           </div>
-        </Glass>
 
-        {/* Botões */}
+          {/* Intervalo dos sinais AI — controla o consumo de tokens da Groq */}
+          <div style={{ background: "rgba(0,0,0,0.18)", borderRadius: 10, padding: "16px 18px", marginTop: 14 }}>
+            <div style={{ fontSize: 12, fontWeight: 700, marginBottom: 2 }}>⏱ Frequência da análise AI</div>
+            <div style={{ fontSize: 10, color: T.muted, marginBottom: 12, lineHeight: 1.5 }}>
+              De quanto em quanto tempo o bot analisa o mercado com a IA. Intervalos maiores poupam tokens da Groq (evita o limite diário). Aplica-se ao bot 24/7.
+            </div>
+            <div style={{ fontSize: 11, color: T.muted, marginBottom: 6 }}>
+              A cada <b style={{ color: T.aLight }}>{local.aiSignalsMin} min</b>
+              {local.aiSignalsMin <= 5 && <span style={{ color: T.red }}> · consumo alto</span>}
+              {local.aiSignalsMin >= 6 && local.aiSignalsMin <= 14 && <span style={{ color: T.gold }}> · consumo médio</span>}
+              {local.aiSignalsMin >= 15 && <span style={{ color: T.green }}> · consumo baixo (recomendado)</span>}
+            </div>
+            <input type="range" min={3} max={60} step={1} value={local.aiSignalsMin}
+              onChange={e => upd("aiSignalsMin", +e.target.value)} style={{ width: "100%", accentColor: T.accent }} />
+            <div style={{ display: "flex", justifyContent: "space-between", fontSize: 9, color: T.muted, marginTop: 4 }}>
+              <span>3 min · reação rápida, gasta muito</span><span>60 min · muito económico</span>
+            </div>
+          </div>
+        </Glass>
         <div style={{ display: "flex", gap: 12, justifyContent: "space-between", alignItems: "center" }}>
           {/* Limpar simulações */}
           <button onClick={() => {
@@ -3324,7 +3468,7 @@ pm2 save && pm2 startup`}</CodeBlock>
             icon: "🗑",
             title: "Apagar todas as simulações?",
             message: "Vais apagar todo o histórico e posições simuladas e reiniciar com o capital configurado.",
-            lines: ["Esta ação é irreversível", "As posições abertas serão fechadas", "As estratégias ativas serão apagadas", "O saldo volta ao capital inicial"],
+            lines: ["Esta ação é irreversível", "As posições abertas serão fechadas", "As estratégias ativas serão apagadas", "Os trades de Day Trading serão apagados", "O saldo volta ao capital inicial"],
             confirmLabel: "Sim, apagar tudo",
             onConfirm: () => {
               const tradesToDelete = [...simPositions, ...simClosed];
@@ -3338,10 +3482,16 @@ pm2 save && pm2 startup`}</CodeBlock>
               setSimStartedAt(null);
               setStrategies([]);
               stratRef.current = [];
+              // Limpar Day Trading
+              setDtTrades([]);
+              setDtDailyPnl(0);
+              setDtScanResult(null);
+              setDtActive(false);
               // Apagar TUDO do Firestore (senão o bot recarrega)
               if (user) import("./firebase.js").then(({ saveSetting, deleteStrategy, deleteTrade }) => {
                 saveSetting(user.uid, "archivedSims", []).catch(()=>{});
                 saveSetting(user.uid, "simBalance", simCapital).catch(()=>{});
+                saveSetting(user.uid, "dtState", { trades: [], dailyPnl: 0 }).catch(()=>{});
                 stratsToDelete.forEach(id => deleteStrategy(user.uid, id).catch(()=>{}));
                 tradesToDelete.forEach(t => deleteTrade(user.uid, t.id).catch(()=>{}));
               });
@@ -3398,7 +3548,7 @@ pm2 save && pm2 startup`}</CodeBlock>
         const useGroq  = aiProvider !== "claude";
         const callFn   = useGroq ? callGroq : callAI;
         const modelLbl = useGroq ? "Groq/LLaMA" : "Claude";
-        const { result, cost: c } = await callFn({
+        const { result, cost: c, tokens: tk } = await callFn({
           max_tokens: 1500,
           temperature: 0.25,
           system: "És um day trader profissional especializado em scalping e movimentos intradiários. Analisa ativos e dá sinais PRECISOS para hoje. Responde SEMPRE com JSON puro.",
@@ -3446,6 +3596,7 @@ JSON puro:
         });
         setDtScanResult({ ...result, scanAt: new Date().toLocaleTimeString("pt-PT") });
         setAiCost(p => +(p + (c||0)).toFixed(5));
+        if (useGroq && tk) setGroqTokens(p => p + tk);
 
         // Auto-executar se urgência = AGORA e ação = COMPRAR e modo activo
         if (dtActive && result.oportunidades) {
@@ -3483,7 +3634,15 @@ JSON puro:
         }
 
         toast("⚡ Scan concluído!", "success");
-      } catch (e) { toast(`Erro no scan: ${e.message}`, "error"); }
+      } catch (e) {
+        const msg = String(e.message || "");
+        if (/rate limit|TPD|tokens per day|429/i.test(msg)) {
+          const m = /try again in ([\dhms.\s]+?)[.\n]/i.exec(msg);
+          toast(`⏳ Limite diário de IA atingido (Groq). ${m ? `Tenta de novo em ${m[1].trim()}.` : "Tenta mais tarde ou aumenta o intervalo nas Definições."}`, "warn");
+        } else {
+          toast(`Erro no scan: ${msg}`, "error");
+        }
+      }
       setDtLoading(false);
     };
 
@@ -3858,7 +4017,7 @@ JSON puro:
       });
     }).catch(() => {});
     // Carregar estratégias guardadas
-    let unsubStrat = null, unsubSettings = null, unsubLive = null, unsubArch = null, unsubDt = null, unsubBot = null;
+    let unsubStrat = null, unsubSettings = null, unsubLive = null, unsubArch = null, unsubDt = null, unsubBot = null, unsubSig = null;
     import("./firebase.js").then(({ subscribeStrategies, subscribeSetting: subSet }) => {
       if (subscribeStrategies) {
         unsubStrat = subscribeStrategies(uid2, (strats) => {
@@ -3903,8 +4062,12 @@ JSON puro:
       unsubBot = subSet(uid2, "botStatus", (val) => {
         if (val && typeof val === "object") setBotStatus(val);
       });
+      unsubSig = subSet(uid2, "marketSignals", (val) => {
+        // Só usar os sinais do bot quando ele está ativo (senão a app gera os seus)
+        if (val && typeof val === "object" && botActiveRef.current) setMarketSignals(val);
+      });
     }).catch(() => {});
-    return () => { unsubTrades?.(); unsubBal?.(); unsubStrat?.(); unsubSettings?.(); unsubLive?.(); unsubArch?.(); unsubDt?.(); unsubBot?.(); };
+    return () => { unsubTrades?.(); unsubBal?.(); unsubStrat?.(); unsubSettings?.(); unsubLive?.(); unsubArch?.(); unsubDt?.(); unsubBot?.(); unsubSig?.(); };
   }, [user]);
 
   // ── Persistência: guardar trade quando aberto ─────────────────────────────
