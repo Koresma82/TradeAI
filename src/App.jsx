@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef, useCallback } from "react";
 import { useAuth } from "./AuthContext.jsx";
-import { logout } from "./firebase.js";
+import { logout, getIdToken } from "./firebase.js";
 import LoginScreen from "./LoginScreen.jsx";
 import { AreaChart, Area, XAxis, YAxis, Tooltip, ResponsiveContainer, ReferenceLine } from "recharts";
 
@@ -9,13 +9,17 @@ import { AreaChart, Area, XAxis, YAxis, Tooltip, ResponsiveContainer, ReferenceL
 const AI_ENDPOINT = "/.netlify/functions/ai";
 
 async function callAI({ messages, system, max_tokens = 1000 }) {
+  const token = await getIdToken();
   const res = await fetch(AI_ENDPOINT, {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers: {
+      "Content-Type": "application/json",
+      ...(token ? { Authorization: `Bearer ${token}` } : {}),
+    },
     body: JSON.stringify({ model: "claude-sonnet-4-20250514", max_tokens, system, messages }),
   });
   const data = await res.json();
-  if (!res.ok) throw new Error(data?.error?.message || "Erro na API");
+  if (!res.ok) throw new Error(data?.error?.message || data?.error || "Erro na API");
   const text = data.content?.[0]?.text || "{}";
   // Estimar custo: input ~€0.003/1K tokens, output ~€0.015/1K tokens (Sonnet)
   const inTok  = data.usage?.input_tokens  || 400;
@@ -28,13 +32,17 @@ async function callAI({ messages, system, max_tokens = 1000 }) {
 // ─── GROQ (Day Trading — rápido e barato) ────────────────────────────────────
 async function callGroq({ messages, system, max_tokens = 1500, temperature = 0.3 }) {
   const msgs = system ? [{ role: "system", content: system }, ...messages] : messages;
+  const token = await getIdToken();
   const res  = await fetch("/.netlify/functions/groq", {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers: {
+      "Content-Type": "application/json",
+      ...(token ? { Authorization: `Bearer ${token}` } : {}),
+    },
     body: JSON.stringify({ max_tokens, temperature, messages: msgs }),
   });
   const data = await res.json();
-  if (!res.ok) throw new Error(data?.error || "Erro Groq");
+  if (!res.ok) throw new Error(data?.error?.message || data?.error || "Erro Groq");
   const text  = data.content?.[0]?.text || "{}";
   const cost  = data._cost || 0;
   const tokens = data.usage?.total_tokens || 0;
@@ -268,6 +276,19 @@ export default function TradeAI() {
   const [assets, setAssets]       = useState(() =>
     ASSETS.map(a => ({ ...a, price: a.base, hist: genH(a.base), change: (Math.random() - 0.48) * 3.5 }))
   );
+  // Resolve um ativo a partir de uma posição/trade de forma robusta:
+  // tenta id, depois símbolo, depois nome. Tolera trades antigos guardados com id errado (ex: "xag").
+  const resolveAsset = useCallback((ref) => {
+    if (!ref) return undefined;
+    const norm = s => String(s || "").toLowerCase().trim();
+    const byId   = ref.assetId   ?? ref.id;
+    const bySym  = ref.assetSym  ?? ref.sym;
+    const byName = ref.assetName ?? ref.nome ?? ref.name;
+    return assets.find(x => x.id === byId)
+        || assets.find(x => norm(x.sym) === norm(byId))
+        || assets.find(x => norm(x.sym) === norm(bySym))
+        || assets.find(x => norm(x.name) === norm(byName));
+  }, [assets]);
   const [positions, setPositions] = useState([]);
   const [closed, setClosed]       = useState([]);
   const [strategies, setStrategies] = useState([]);
@@ -443,8 +464,12 @@ export default function TradeAI() {
         const exitOnFlip = cfg.aiExitOnFlip !== false;
         const flipConf   = cfg.aiBrainConfianca || 78;
         const toClose = [], toKeep = [];
+        const normId = s => String(s || "").toLowerCase().trim();
         posPool.forEach(pos => {
-          const a = upd.find(x => x.id === pos.assetId);
+          const a = upd.find(x => x.id === pos.assetId)
+                 || upd.find(x => normId(x.sym) === normId(pos.assetId))
+                 || upd.find(x => normId(x.sym) === normId(pos.assetSym))
+                 || upd.find(x => normId(x.name) === normId(pos.assetName));
           if (!a) { toKeep.push(pos); return; }
           let p2 = { ...pos };
 
@@ -609,7 +634,7 @@ export default function TradeAI() {
   const activeBalance   = simMode ? simBalance   : balance;
   const invested    = activePositions.reduce((s, p) => s + p.amount, 0);
   const unrealized  = activePositions.reduce((s, p) => {
-    const a = assets.find(x => x.id === p.assetId);
+    const a = resolveAsset(p);
     return s + (a ? (a.price - p.entryPrice) * p.units : 0);
   }, 0);
   const realized    = activeClosed.reduce((s, p) => s + (p.pnl || 0), 0);
@@ -962,7 +987,7 @@ JSON puro — inclui TODOS os ativos relevantes de TODAS as categorias:
                 const stratPnl    = stratTrades.reduce((sum, t) => sum + (t.pnl || 0), 0);
                 const openForStrat = activePositions.filter(p => p.stratId === s.id);
                 const openPnl = openForStrat.reduce((sum, p) => {
-                  const a = assets.find(x => x.id === p.assetId);
+                  const a = resolveAsset(p);
                   return sum + (a ? (a.price - p.entryPrice) * p.units : 0);
                 }, 0);
                 const total = stratPnl + openPnl;
@@ -1515,9 +1540,9 @@ JSON: {"signals":[{"id":"btc","sinal":"COMPRAR|VENDER|AGUARDAR","razao":"1 frase
     const pool  = isSim ? simPosRef.current : positions;
     const pos   = pool.find(p => p.id === posId);
     if (!pos) { toast("Posição já não está aberta", "warn"); return; }
-    const a     = assets.find(x => x.id === pos.assetId);
+    const a     = resolveAsset(pos);
     // Bloquear venda se o mercado desse ativo estiver fechado
-    if (!isMarketOpen(pos.assetId)) {
+    if (!isMarketOpen(a?.id || pos.assetId)) {
       toast(`⏸ Mercado de ${a?.sym || pos.assetId} fechado — não é possível vender agora`, "warn");
       return;
     }
@@ -1726,7 +1751,7 @@ JSON: {"signals":[{"id":"btc","sinal":"COMPRAR|VENDER|AGUARDAR","razao":"1 frase
         {allPositions.length > 0 && (() => {
           const totalInv   = allPositions.reduce((s,p) => s+p.amount, 0);
           const totalUnreal= allPositions.reduce((s,p) => {
-            const a = assets.find(x=>x.id===p.assetId);
+            const a = resolveAsset(p);
             return s + (a ? (a.price-p.entryPrice)*p.units : 0);
           }, 0);
           const totalWin   = allClosed.filter(t=>t.pnl>0).length;
@@ -1893,7 +1918,7 @@ JSON: {"signals":[{"id":"btc","sinal":"COMPRAR|VENDER|AGUARDAR","razao":"1 frase
             </div>
             <Glass style={{ padding:"0", overflow:"hidden" }}>
               {allClosed.slice(0,10).map((t,i) => {
-                const a   = assets.find(x=>x.id===t.assetId);
+                const a   = resolveAsset(t);
                 const col = (t.pnl||0)>=0 ? T.green : T.red;
                 return (
                   <div key={t.id} style={{
@@ -2542,14 +2567,21 @@ JSON: {"signals":[{"id":"btc","sinal":"COMPRAR|VENDER|AGUARDAR","razao":"1 frase
   // RENDER: HISTÓRICO
   // ─────────────────────────────────────────────
   const History = () => {
+    // Resolve o ativo de forma robusta (id, símbolo ou nome) — tolera trades antigos com id errado
+    const norm = s => String(s || "").toLowerCase().trim();
+    const findAsset = (t) =>
+         assets.find(x => x.id === t.assetId)
+      || assets.find(x => norm(x.sym) === norm(t.assetId))
+      || assets.find(x => norm(x.sym) === norm(t.assetSym))
+      || assets.find(x => norm(x.name) === norm(t.assetName));
     // Organiza por modo (sim/live) e categoria
     const simTrades  = [...simPositions.map(p => {
-      const a = assets.find(x => x.id === p.assetId);
+      const a = findAsset(p);
       return { ...p, curPnl: a ? (a.price - p.entryPrice) * p.units : 0, livePrice: a?.price, mode: "sim" };
     }), ...simClosed.map(t => ({...t, mode:"sim"}))];
 
     const liveTrades = [...positions.map(p => {
-      const a = assets.find(x => x.id === p.assetId);
+      const a = findAsset(p);
       return { ...p, curPnl: a ? (a.price - p.entryPrice) * p.units : 0, livePrice: a?.price, mode: "live" };
     }), ...closed.map(t => ({...t, mode:"live"}))];
 
@@ -2564,10 +2596,10 @@ JSON: {"signals":[{"id":"btc","sinal":"COMPRAR|VENDER|AGUARDAR","razao":"1 frase
     const origens = ["Todas", ...new Set(activeTrades.map(origemDe))];
 
     const cats = ["Todos", ...new Set(activeTrades.map(t => {
-      const a = assets.find(x => x.id === t.assetId); return a?.cat || "Outro";
+      const a = findAsset(t); return a?.cat || "Outro";
     }))];
     const filtered = activeTrades.filter(t => {
-      const a = assets.find(x => x.id === t.assetId);
+      const a = findAsset(t);
       const okCat = histCat === "Todos" || a?.cat === histCat;
       const okOrig = histOrigem === "Todas" || origemDe(t) === histOrigem;
       return okCat && okOrig;
@@ -2719,15 +2751,15 @@ JSON: {"signals":[{"id":"btc","sinal":"COMPRAR|VENDER|AGUARDAR","razao":"1 frase
                 {filtered.map(t => {
                   const pnl    = t.pnl !== undefined ? t.pnl : t.curPnl;
                   const isOpen = t.status === "ABERTA";
-                  const a      = assets.find(x => x.id === t.assetId);
+                  const a      = findAsset(t);
                   return (
                     <tr key={t.id} style={{ borderBottom: `1px solid ${T.border}20` }}>
-                      <td style={{ padding: "9px 10px", fontWeight: 700 }}>{a?.icon} {t.assetSym}</td>
+                      <td style={{ padding: "9px 10px", fontWeight: 700 }}>{a?.icon || "◆"} {a?.sym || t.assetSym || t.assetId}</td>
                       <td style={{ padding: "9px 10px", color: T.muted }}>{a?.cat || "—"}</td>
                       <td style={{ padding: "9px 10px", color: T.muted, maxWidth: 110, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{t.strategy}</td>
                       <td style={{ padding: "9px 10px", color: T.muted }}>{t.openedAt}</td>
                       <td style={{ padding: "9px 10px" }}>${t.entryPrice?.toFixed(2)}</td>
-                      <td style={{ padding: "9px 10px" }}>{isOpen ? `$${t.livePrice ? fmt(t.livePrice, t.assetId) : "—"}` : `$${(+t.closePrice).toFixed(2)}`}</td>
+                      <td style={{ padding: "9px 10px" }}>{isOpen ? `$${t.livePrice ? fmt(t.livePrice, a?.id || t.assetId) : "—"}` : `$${(+t.closePrice).toFixed(2)}`}</td>
                       <td style={{ padding: "9px 10px" }}>€{t.amount}</td>
                       <td style={{ padding: "9px 10px", color: T.red }}>${t.sl}</td>
                       <td style={{ padding: "9px 10px", color: T.green }}>${t.tp}</td>
@@ -3683,8 +3715,8 @@ JSON puro:
     const closeDtTrade = (tradeId) => {
       setDtTrades(p => p.map(t => {
         if (t.id !== tradeId || t.status !== "ABERTA") return t;
-        const a    = assets.find(x => x.id === t.assetId);
-        const price = a?.price || mktData[t.assetId]?.price || t.entryPrice;
+        const a    = resolveAsset(t);
+        const price = a?.price || mktData[a?.id]?.price || t.entryPrice;
         const pnl  = (price - t.entryPrice) * t.units;
         setDtDailyPnl(prev => +(prev + pnl).toFixed(2));
         // Fechar na posições
@@ -3944,8 +3976,8 @@ JSON puro:
             </div>
             <div style={{ display:"flex", flexDirection:"column", gap:8 }}>
               {dtTrades.map(t => {
-                const a     = assets.find(x => x.id === t.assetId);
-                const price = a?.price || mktData[t.assetId]?.price || t.entryPrice;
+                const a     = resolveAsset(t);
+                const price = a?.price || mktData[a?.id]?.price || t.entryPrice;
                 const curPnl = t.status==="ABERTA"
                   ? (price - t.entryPrice) * t.units
                   : (t.pnl || 0);
@@ -3958,11 +3990,11 @@ JSON puro:
                     alignItems:"center", fontSize:12,
                   }}>
                     <div>
-                      <div style={{ fontWeight:700 }}>{a?.icon} {t.assetName}</div>
+                      <div style={{ fontWeight:700 }}>{a?.icon || "⚡"} {a?.name || t.assetName || t.assetId}</div>
                       <div style={{ fontSize:10, color:T.muted }}>{t.openedAt} · €{t.amount}</div>
                     </div>
                     <div><div style={{ fontSize:8, color:T.muted }}>ENTRADA</div><div style={{ fontWeight:700 }}>${t.entryPrice?.toFixed(2)}</div></div>
-                    <div><div style={{ fontSize:8, color:T.muted }}>ATUAL</div><div style={{ fontWeight:700 }}>${fmt(price, t.assetId)}</div></div>
+                    <div><div style={{ fontSize:8, color:T.muted }}>ATUAL</div><div style={{ fontWeight:700 }}>${fmt(price, a?.id || t.assetId)}</div></div>
                     <div><div style={{ fontSize:8, color:T.green }}>TP +{dtProfitTarget}%</div><div style={{ fontWeight:700, color:T.green }}>${t.tp}</div></div>
                     <div>
                       <div style={{ fontSize:16, fontWeight:800, color:col }}>{sign(curPnl)}€{Math.abs(curPnl).toFixed(2)}</div>
@@ -4516,7 +4548,7 @@ JSON puro:
           {/* Stats — TODAS as posições (manuais + estratégias + day trading) */}
           {(() => {
             const unrealSim = simPositions.reduce((sum, pos) => {
-              const a = assets.find(x => x.id === pos.assetId);
+              const a = resolveAsset(pos);
               return sum + (a ? (a.price - pos.entryPrice) * pos.units : 0);
             }, 0);
             const capInvestido = simPositions.reduce((s,p) => s+p.amount, 0);

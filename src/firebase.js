@@ -33,6 +33,13 @@ export const loginWithGoogle = () => signInWithPopup(auth, googleProvider);
 export const logout          = ()  => signOut(auth);
 export const onAuthChange    = (cb) => onAuthStateChanged(auth, cb);
 
+// Token do utilizador atual (para autenticar as Netlify Functions).
+export async function getIdToken() {
+  const u = auth.currentUser;
+  if (!u) return null;
+  try { return await u.getIdToken(); } catch { return null; }
+}
+
 // ── Firestore helpers (prefixados com uid para dados por utilizador) ──────────
 const userDoc  = (uid, ...segs) => doc(db, "users", uid, ...segs);
 const userCol  = (uid, col_)   => collection(db, "users", uid, col_);
