@@ -78,8 +78,26 @@ const MARKET_HOURS = {
   eurusd: { label:"Forex: 00:00–21:00 UTC (seg–sex)",  openH:0,    closeH:21, weekdays:true },
 };
 
+// Horários por categoria (fallback quando o ativo não está em MARKET_HOURS).
+// Crypto = sempre aberto; Forex = seg–sex; Commodity/ETF/ação = sessão US.
+const CATEGORY_HOURS = {
+  Crypto:    { always: true },
+  Forex:     { openH: 0,    closeH: 21, weekdays: true },
+  Commodity: { openH: 14.5, closeH: 21, weekdays: true },
+  ETF:       { openH: 14.5, closeH: 21, weekdays: true },
+  Ação:      { openH: 14.5, closeH: 21, weekdays: true },
+};
+
+function marketRule(id) {
+  if (MARKET_HOURS[id]) return MARKET_HOURS[id];
+  // Procura a categoria do ativo
+  const a = (typeof ASSETS !== "undefined") ? ASSETS.find(x => x.id === id) : null;
+  if (a && CATEGORY_HOURS[a.cat]) return CATEGORY_HOURS[a.cat];
+  return null;
+}
+
 function isMarketOpen(id) {
-  const h = MARKET_HOURS[id];
+  const h = marketRule(id);
   if (!h || h.always) return true;
   const now  = new Date();
   const utcH = now.getUTCHours() + now.getUTCMinutes() / 60;
@@ -305,6 +323,7 @@ export default function TradeAI() {
   // Estado do bot 24/7 (Railway). Quando vivo, a app não opera — só mostra.
   const [botStatus, setBotStatus]   = useState(null); // { alive, mode, lastSeen, features }
   const botActiveRef = useRef(false);
+  const dtLoadedRef  = useRef(false); // garante que o flag do monitor só é sincronizado uma vez
 
   // ── Definições ──
   const [settings, setSettings] = useState({
@@ -366,15 +385,18 @@ export default function TradeAI() {
         saveSetting(user.uid, "dtState", {
           trades: dtTrades, dailyPnl: dtDailyPnl,
           profitTarget: dtProfitTarget, maxLoss: dtMaxLoss, amount: dtAmount, minConf: dtMinConf,
+          active: dtActive, assets: dtAssets.map(a => a.id),
         }).catch(()=>{}));
     }, 1000);
     return () => clearTimeout(t);
-  }, [dtTrades, dtDailyPnl, dtProfitTarget, dtMaxLoss, dtAmount, dtMinConf, user, dbLoaded]);
+  }, [dtTrades, dtDailyPnl, dtProfitTarget, dtMaxLoss, dtAmount, dtMinConf, dtActive, dtAssets, user, dbLoaded]);
 
   useEffect(() => { simPosRef.current = simPositions; }, [simPositions]);
   useEffect(() => { simStartedRef.current = !!simStartedAt; }, [simStartedAt]);
-  // Bot 24/7 considerado ativo se o heartbeat foi nos últimos 3 min
-  const botAtivo = !!(botStatus?.alive && botStatus?.lastSeen && (Date.now() - botStatus.lastSeen < 3 * 60 * 1000));
+  // Bot 24/7 considerado ativo se o heartbeat foi nos últimos 3 min E o modo bate certo
+  const botHeartbeatRecente = !!(botStatus?.alive && botStatus?.lastSeen && (Date.now() - botStatus.lastSeen < 3 * 60 * 1000));
+  const botModoBate = !botStatus?.mode || (simMode === (botStatus.mode === "sim"));
+  const botAtivo = botHeartbeatRecente && botModoBate;
   useEffect(() => { botActiveRef.current = botAtivo; }, [botAtivo]);
   useEffect(() => { stratRef.current = strategies; }, [strategies]);
   useEffect(() => { posRef.current = positions; }, [positions]);
@@ -847,17 +869,46 @@ JSON puro — inclui TODOS os ativos relevantes de TODAS as categorias:
             </div>
             <span style={{ fontSize:9, color:T.muted }}>visto {Math.round((Date.now()-botStatus.lastSeen)/1000)}s atrás</span>
           </div>
-        ) : (
-          <div style={{
-            display:"flex", alignItems:"center", gap:12, padding:"12px 18px", borderRadius:12,
-            background:`${T.gold}0c`, border:`1px solid ${T.gold}28`,
-          }}>
-            <div style={{ width:9, height:9, borderRadius:"50%", background:T.gold, flexShrink:0 }}/>
-            <div style={{ fontSize:11, color:T.muted }}>
-              <b style={{ color:T.gold }}>Bot 24/7 offline</b> — o trading só corre enquanto esta app estiver aberta. Liga o bot no servidor para operar sem a app.
+        ) : (() => {
+          // Diagnóstico do motivo de estar offline (a app infere a partir do Firestore)
+          const seenMs   = botStatus?.lastSeen ? Date.now() - botStatus.lastSeen : null;
+          const agoTxt   = seenMs == null ? null
+            : seenMs < 90000      ? `${Math.round(seenMs/1000)}s`
+            : seenMs < 3600000    ? `${Math.round(seenMs/60000)} min`
+            : `${Math.round(seenMs/3600000)}h`;
+          const modeTxt  = simMode ? "Simulação" : "LIVE";
+
+          let titulo, detalhe;
+          if (!botStatus) {
+            // Nunca recebeu nenhum heartbeat
+            titulo  = "Bot 24/7 offline — nunca recebeu sinal";
+            detalhe = "A app ainda não viu nenhum heartbeat do bot. Causas comuns: o USER_UID no Railway não é igual ao teu (Definições → Copiar UID), o deploy falhou, ou falta o FIREBASE_ADMIN_JSON. Confirma os Deploy Logs no Railway.";
+          } else if (botHeartbeatRecente && !botModoBate) {
+            // Bot vivo mas noutro modo
+            titulo  = `Bot ativo em ${botStatus.mode === "sim" ? "Simulação" : "LIVE"}, mas estás em ${modeTxt}`;
+            detalhe = `O bot está a operar em modo ${botStatus.mode === "sim" ? "Simulação" : "LIVE"}. Muda o toggle no topo para ${botStatus.mode === "sim" ? "Simulação" : "LIVE"} para o veres a gerir as posições aqui.`;
+          } else {
+            // Recebeu antes, mas o heartbeat está velho → parou/crashou
+            titulo  = `Bot 24/7 offline — sem sinal há ${agoTxt}`;
+            detalhe = "O bot já esteve ligado mas parou de responder (passou dos 3 min). Provavelmente crashou ou foi reiniciado. Vê os Deploy Logs no Railway e confirma que o serviço está 'Active'.";
+          }
+
+          return (
+            <div style={{
+              display:"flex", alignItems:"flex-start", gap:12, padding:"12px 18px", borderRadius:12,
+              background:`${T.gold}0c`, border:`1px solid ${T.gold}28`,
+            }}>
+              <div style={{ width:9, height:9, borderRadius:"50%", background:T.gold, flexShrink:0, marginTop:4 }}/>
+              <div style={{ fontSize:11, color:T.muted, lineHeight:1.55 }}>
+                <b style={{ color:T.gold }}>{titulo}</b>
+                <div style={{ marginTop:3 }}>{detalhe}</div>
+                <div style={{ marginTop:3, fontSize:10, opacity:0.8 }}>
+                  Enquanto offline, o trading só corre com esta app aberta.
+                </div>
+              </div>
             </div>
-          </div>
-        )}
+          );
+        })()}
         {/* Hero */}
         <Glass style={{
           padding: "28px 32px",
@@ -1474,8 +1525,12 @@ JSON puro:
     // Se o bot 24/7 está ativo, ele já gera os sinais — a app lê-os do Firestore
     // (poupa tokens e evita análises duplicadas).
     if (botActiveRef.current) return;
+    if (tabRef.current === "settings") return; // ⏸ não refrescar enquanto se editam Definições
+    // Poupar tokens: só analisa ativos com mercado aberto. Crypto está sempre aberto.
+    const abertos = ASSETS.filter(a => isMarketOpen(a.id));
+    if (abertos.length === 0) return; // tudo fechado → não gasta tokens
     try {
-      const lines = ASSETS.map(a => {
+      const lines = abertos.map(a => {
         const live = assRef.current.find(x => x.id === a.id);
         return `${a.id}:${a.sym}=$${live ? fmt(live.price,a.id):"?"}(${live?pctFmt(live.change):"?"})`;
       }).join(", ");
@@ -1502,6 +1557,7 @@ JSON: {"signals":[{"id":"btc","sinal":"COMPRAR|VENDER|AGUARDAR","razao":"1 frase
 
     const fetchMarkets = useCallback(async () => {
     if (hoveredChart.current) return; // não refresh quando rato está num gráfico
+    if (tabRef.current === "settings") return; // ⏸ pausa nas Definições (não refrescar enquanto se edita)
     try {
       const r = await fetch("/.netlify/functions/market");
       const d = await r.json();
@@ -3562,8 +3618,12 @@ pm2 save && pm2 startup`}</CodeBlock>
     const dtPnlColor = dtDailyPnl >= 0 ? T.green : T.red;
 
     // Scan AI: analisa ativos voláteis e decide comprar/vender agora
-    const runScan = async () => {
+    const runScan = async (auto = false) => {
       if (dtLoading) return;
+      // Se o bot 24/7 está ativo (modo SIM), é ele que faz o day trading no servidor.
+      // O scan automático da app pára (evita trades/tokens duplicados). O "Scan Agora"
+      // manual continua a funcionar como análise informativa, mas não auto-compra.
+      if (auto && simModeRef.current && botActiveRef.current) return;
       setDtLoading(true);
       try {
         // Watchlist: ativos escolhidos pelo user, OU (por defeito) os tradeable +
@@ -3578,6 +3638,14 @@ pm2 save && pm2 startup`}</CodeBlock>
             .filter(a => !tradeables.some(t => t.id === a.id));
           watchlist = [...tradeables, ...volateis].slice(0, 12);
         }
+        // Poupar tokens: só analisa ativos com mercado aberto.
+        const abertos = watchlist.filter(a => isMarketOpen(a.id));
+        if (abertos.length === 0) {
+          setDtLoading(false);
+          if (!auto) toast("⏸ Todos os mercados selecionados estão fechados agora", "warn");
+          return;
+        }
+        watchlist = abertos;
         const lines = watchlist.map(a => {
           const live = mktData[a.id] || {};
           const p    = live.price ?? a.price;
@@ -3646,7 +3714,9 @@ JSON puro:
         if (useGroq && tk) setGroqTokens(p => p + tk);
 
         // Auto-executar se urgência = AGORA e ação = COMPRAR e modo activo
-        if (dtActive && result.oportunidades) {
+        // (não auto-compra se o bot 24/7 estiver a gerir o day trading no servidor)
+        const botGereDayTrading = simModeRef.current && botActiveRef.current;
+        if (dtActive && !botGereDayTrading && result.oportunidades) {
           for (const op of result.oportunidades) {
             if (op.acao === "COMPRAR" && op.urgencia === "AGORA" && op.confianca >= dtMinConf) {
               const norm = s => String(s || "").toLowerCase().trim();
@@ -3705,8 +3775,8 @@ JSON puro:
         toast("⏸ Monitor pausado", "warn");
       } else {
         setDtActive(true);
-        runScan();
-        dtTimerRef.current = setInterval(runScan, 5 * 60 * 1000); // scan cada 5 min
+        runScan(true);
+        dtTimerRef.current = setInterval(() => runScan(true), 5 * 60 * 1000); // scan cada 5 min
         toast("▶ Monitor ativo — scan cada 5 min", "success");
       }
     };
@@ -3777,7 +3847,7 @@ JSON puro:
               </div>
             </div>
             <div style={{ display:"flex", gap:10, flexShrink:0 }}>
-              <button onClick={runScan} disabled={dtLoading} style={{
+              <button onClick={() => runScan(false)} disabled={dtLoading} style={{
                 background:`${T.accent}18`, border:`1px solid ${T.accent}44`,
                 borderRadius:10, padding:"10px 18px", fontSize:12, color:T.aLight,
                 cursor:dtLoading?"not-allowed":"pointer", fontFamily:"inherit", fontWeight:700,
@@ -4026,7 +4096,7 @@ JSON puro:
               oportunidades de lucro rápido para hoje. Com o Monitor ativo, a IA faz scan a cada 5 minutos
               e entra automaticamente nas melhores oportunidades.
             </div>
-            <button onClick={runScan} disabled={dtLoading} style={{
+            <button onClick={() => runScan(false)} disabled={dtLoading} style={{
               background:`${T.accent}20`, border:`1px solid ${T.accent}55`,
               borderRadius:12, padding:"14px 32px", fontSize:14, color:T.aLight,
               cursor:dtLoading?"not-allowed":"pointer", fontFamily:"inherit", fontWeight:700,
@@ -4119,6 +4189,11 @@ JSON puro:
           if (typeof val.maxLoss === "number") setDtMaxLoss(val.maxLoss);
           if (typeof val.amount === "number") setDtAmount(val.amount);
           if (typeof val.minConf === "number") setDtMinConf(val.minConf);
+          // Sincroniza o estado do monitor só na primeira carga (a app é a dona deste flag)
+          if (!dtLoadedRef.current && typeof val.active === "boolean") {
+            setDtActive(val.active);
+            dtLoadedRef.current = true;
+          }
         }
       });
       unsubBot = subSet(uid2, "botStatus", (val) => {
@@ -4343,15 +4418,15 @@ JSON puro:
         {/* MAIN */}
         <main className="resp-main" style={{ flex: 1, padding: "22px", paddingBottom: simMode ? 90 : 22, overflowY: "auto", maxHeight: isMobile ? "none" : "calc(100vh - 56px)" }}>
           <div style={{ animation: "fadeIn 0.25s ease" }} key={tab}>
-            {tab === "dashboard"  && <Dashboard />}
-            {tab === "portfolio"  && <Portfolio />}
+            {tab === "dashboard"  && Dashboard()}
+            {tab === "portfolio"  && Portfolio()}
             {tab === "markets"    && <Markets />}
             {tab === "strategies" && <Strategies />}
-            {tab === "ai"         && <AIIntel />}
-            {tab === "history"    && <History />}
-            {tab === "daytrading" && <DayTrading />}
-            {tab === "settings"   && <Settings />}
-            {tab === "guide"      && <Guide />}
+            {tab === "ai"         && AIIntel()}
+            {tab === "history"    && History()}
+            {tab === "daytrading" && DayTrading()}
+            {tab === "settings"   && Settings()}
+            {tab === "guide"      && Guide()}
           </div>
         </main>
       </div>
