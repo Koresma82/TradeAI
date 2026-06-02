@@ -3468,7 +3468,7 @@ pm2 save && pm2 startup`}</CodeBlock>
             icon: "🗑",
             title: "Apagar todas as simulações?",
             message: "Vais apagar todo o histórico e posições simuladas e reiniciar com o capital configurado.",
-            lines: ["Esta ação é irreversível", "As posições abertas serão fechadas", "As estratégias ativas serão apagadas", "Os trades de Day Trading serão apagados", "O saldo volta ao capital inicial"],
+            lines: ["Esta ação é irreversível", "As posições abertas serão fechadas", "As estratégias ativas serão apagadas", "O saldo volta ao capital inicial"],
             confirmLabel: "Sim, apagar tudo",
             onConfirm: () => {
               const tradesToDelete = [...simPositions, ...simClosed];
@@ -3482,16 +3482,10 @@ pm2 save && pm2 startup`}</CodeBlock>
               setSimStartedAt(null);
               setStrategies([]);
               stratRef.current = [];
-              // Limpar Day Trading
-              setDtTrades([]);
-              setDtDailyPnl(0);
-              setDtScanResult(null);
-              setDtActive(false);
               // Apagar TUDO do Firestore (senão o bot recarrega)
               if (user) import("./firebase.js").then(({ saveSetting, deleteStrategy, deleteTrade }) => {
                 saveSetting(user.uid, "archivedSims", []).catch(()=>{});
                 saveSetting(user.uid, "simBalance", simCapital).catch(()=>{});
-                saveSetting(user.uid, "dtState", { trades: [], dailyPnl: 0 }).catch(()=>{});
                 stratsToDelete.forEach(id => deleteStrategy(user.uid, id).catch(()=>{}));
                 tradesToDelete.forEach(t => deleteTrade(user.uid, t.id).catch(()=>{}));
               });
