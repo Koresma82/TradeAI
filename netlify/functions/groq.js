@@ -19,7 +19,7 @@ exports.handler = async (event) => {
         "Authorization": `Bearer ${GROQ_API_KEY}`,
       },
       body: JSON.stringify({
-        model:       body.model       || "llama-3.3-70b-versatile", // melhor modelo Groq para análise financeira
+        model:       body.model       || "llama-3.1-8b-instant", // barato em tokens; evita limite diário
         max_tokens:  body.max_tokens  || 1500,
         temperature: body.temperature || 0.3,  // mais determinístico para trading
         messages:    body.messages,
@@ -34,6 +34,7 @@ exports.handler = async (event) => {
     // Estimar custo: Groq ~$0.00059/1K tokens input, ~$0.00079/1K output (llama-3.3-70b)
     const inTok  = data.usage?.prompt_tokens     || 300;
     const outTok = data.usage?.completion_tokens || 500;
+    const totTok = data.usage?.total_tokens       || (inTok + outTok);
     const cost   = +((inTok * 0.00059 + outTok * 0.00079) / 1000).toFixed(6);
 
     return {
@@ -41,9 +42,9 @@ exports.handler = async (event) => {
       headers: { "Content-Type": "application/json", "Access-Control-Allow-Origin": "*" },
       body: JSON.stringify({
         content: [{ type: "text", text }],
-        usage:   { input_tokens: inTok, output_tokens: outTok },
+        usage:   { input_tokens: inTok, output_tokens: outTok, total_tokens: totTok },
         _cost:   cost,
-        _model:  "groq/llama-3.3-70b",
+        _model:  data.model || "groq",
       }),
     };
   } catch (err) {
