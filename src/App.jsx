@@ -936,7 +936,7 @@ JSON puro — inclui TODOS os ativos relevantes de TODAS as categorias:
         <div className="resp-grid" style={{ display: "grid", gridTemplateColumns: "repeat(5,1fr)", gap: 12 }}>
           {[
             { l: "Estratégias Ativas", v: strategies.filter(s => s.ativo).length, c: T.accent },
-            { l: "Total Trades",       v: positions.length + closed.length,        c: T.blue   },
+            { l: "Total Trades",       v: activePositions.length + activeClosed.length, c: T.blue   },
             { l: "Win Rate",           v: winRate !== null ? `${winRate.toFixed(0)}%` : "—",   c: T.gold  },
             { l: "Capital Investido",  v: `€${invested.toFixed(0)}`,               c: T.aLight },
           ].map(m => (
@@ -1053,7 +1053,18 @@ JSON puro — inclui TODOS os ativos relevantes de TODAS as categorias:
                   }}>
                     <div>
                       <div style={{ fontWeight: 700 }}>{s.nome}</div>
-                      <div style={{ fontSize: 10, color: T.muted }}>{(s.ativos||[]).join(", ").toUpperCase()} · {s.risco}</div>
+                      <div style={{ fontSize: 10, color: T.muted, display:"flex", alignItems:"center", gap:6, flexWrap:"wrap" }}>
+                        <span>{(s.ativos||[]).join(", ").toUpperCase()} · {s.risco}</span>
+                        {(() => {
+                          const ativos = s.ativos || [];
+                          if (!ativos.length) return null;
+                          const abertos = ativos.filter(id => isMarketOpen(id)).length;
+                          const m = abertos === 0          ? { t:"🔴 Mercado fechado", c:T.red }
+                                  : abertos === ativos.length ? { t:"🟢 Mercado aberto",  c:T.green }
+                                  :                             { t:`🟡 ${abertos}/${ativos.length} abertos`, c:T.gold };
+                          return <span style={{ color:m.c, fontWeight:600 }}>· {m.t}</span>;
+                        })()}
+                      </div>
                     </div>
                     <div><div style={{ fontSize: 8, color: T.muted }}>POSIÇÕES</div><div style={{ fontWeight: 700, color: T.accent }}>{openForStrat.length}</div></div>
                     <div><div style={{ fontSize: 8, color: T.muted }}>TRADES</div><div style={{ fontWeight: 700 }}>{stratTrades.length + openForStrat.length}</div></div>
@@ -1868,6 +1879,13 @@ JSON: {"signals":[{"id":"btc","sinal":"COMPRAR|VENDER|AGUARDAR","razao":"1 frase
                                 <span style={{ fontWeight:700, fontSize:15 }}>{a.name}</span>
                                 {pos.mode==="sim" && <Badge label="SIM" color={T.gold}/>}
                                 <Badge label={open?"ABERTO":"FECHADO"} color={open?T.green:T.red}/>
+                                {(() => {
+                                  const o = pos.stratId === "ai-brain"   ? { l:"🤖 AI Brain",   c:T.accent }
+                                          : pos.stratId === "daytrading" ? { l:"⚡ Day Trade",  c:T.gold }
+                                          : pos.stratId === "manual"     ? { l:"✋ Manual",     c:T.muted }
+                                          :                                { l:"🎯 Estratégia", c:T.blue };
+                                  return <Badge label={o.l} color={o.c}/>;
+                                })()}
                               </div>
                               <div style={{ fontSize:10, color:T.muted, marginTop:3 }}>
                                 {a.cat} · {a.sym}
