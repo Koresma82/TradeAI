@@ -911,6 +911,38 @@ JSON puro — inclui TODOS os ativos relevantes de TODAS as categorias:
             </div>
           );
         })()}
+        {/* Saúde das APIs (vem do heartbeat do bot) */}
+        {botStatus?.apiHealth && (() => {
+          const h = botStatus.apiHealth;
+          const agora = Date.now();
+          const pill = (nome, estado, detalhe) => {
+            const cor = estado === "ok" ? T.green : estado === "fail" ? T.red : T.muted;
+            const txt = estado === "ok" ? "OK" : estado === "fail" ? "Falha" : "—";
+            return (
+              <div key={nome} style={{
+                display:"flex", alignItems:"center", gap:6, padding:"5px 10px",
+                borderRadius:8, background:`${cor}10`, border:`1px solid ${cor}30`,
+              }}>
+                <div style={{ width:7, height:7, borderRadius:"50%", background:cor, flexShrink:0 }}/>
+                <span style={{ fontSize:10, fontWeight:600 }}>{nome}</span>
+                <span style={{ fontSize:9, color:cor, fontWeight:700 }}>{txt}</span>
+                {detalhe && <span style={{ fontSize:9, color:T.muted }}>{detalhe}</span>}
+              </div>
+            );
+          };
+          const groqDet = h.groq?.rateLimited
+            ? `pausado ${Math.max(0, Math.round((h.groq.untilMs - agora)/60000))}min`
+            : null;
+          const fonteEstado = (s) => s?.ok === true ? "ok" : s?.ok === false ? "fail" : "unknown";
+          return (
+            <div style={{ display:"flex", gap:8, flexWrap:"wrap", alignItems:"center", padding:"0 4px" }}>
+              <span style={{ fontSize:10, color:T.muted, marginRight:2 }}>APIs:</span>
+              {pill("Cérebro AI (Groq)", h.groq?.ok ? "ok" : "fail", groqDet)}
+              {pill("Stooq", fonteEstado(h.stooq), h.stooq?.err ? "rede" : null)}
+              {pill("CoinGecko", fonteEstado(h.coingecko), h.coingecko?.err ? "rede" : null)}
+            </div>
+          );
+        })()}
         {/* Hero */}
         <Glass style={{
           padding: "28px 32px",
@@ -4498,7 +4530,7 @@ JSON puro:
           ))}
           <div style={{ marginTop: "auto", padding: "16px 18px", borderTop: `1px solid ${T.border}` }}>
             <div style={{ fontSize: 9, color: T.muted, letterSpacing: "0.12em", textTransform: "uppercase", marginBottom: 6 }}>Posições Abertas</div>
-            <div style={{ fontSize: 22, fontWeight: 700 }}>{positions.length}</div>
+            <div style={{ fontSize: 22, fontWeight: 700 }}>{activePositions.length}</div>
             <div style={{ fontSize: 9, color: T.muted, letterSpacing: "0.12em", textTransform: "uppercase", marginTop: 10, marginBottom: 4 }}>P&L Não Realizado</div>
             <div style={{ fontSize: 14, fontWeight: 700, color: unrealized >= 0 ? T.green : T.red }}>
               {sign(unrealized)}{eur(unrealized)}
