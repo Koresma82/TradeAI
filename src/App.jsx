@@ -259,6 +259,7 @@ export default function TradeAI() {
   const [simClosed,   setSimClosed]   = useState([]);     // trades fechados SIM
   const [simSummary,  setSimSummary]  = useState(null);   // resultado final mostrado no modal
   const [archivedSims, setArchivedSims] = useState([]);   // histórico de simulações arquivadas
+  const [dailyArchives, setDailyArchives] = useState([]); // arquivos diários (bot, à meia-noite)
   const [simMode, setSimMode] = useState(true);   // true = simulação | false = live real
   const simModeRef = useRef(true);
   const [liveSettings, setLiveSettings] = useState({      // definições separadas para live
@@ -283,6 +284,7 @@ export default function TradeAI() {
   const dtTimerRef = useRef(null);                            // intervalo de scan
   const [histCat, setHistCat] = useState("Todos"); // categoria filtro histórico
   const [histOrigem, setHistOrigem] = useState("Todas"); // filtro por origem (AI Brain, estratégias, etc.)
+  const [histOpenDay, setHistOpenDay] = useState(null); // dia de arquivo expandido no histórico
   const [simStartedAt, setSimStartedAt] = useState(null); // timestamp início
   const simBalRef   = useRef(1000);
   const simPosRef   = useRef([]);
@@ -2785,6 +2787,73 @@ JSON: {"signals":[{"id":"btc","sinal":"COMPRAR|VENDER|AGUARDAR","razao":"1 frase
           </Glass>
         )}
 
+        {/* Arquivos diários (automáticos, criados pelo bot à meia-noite) */}
+        {histTab === "sim" && dailyArchives.length > 0 && (
+          <Glass style={{ padding: "16px 18px" }}>
+            <div style={{ fontSize: 12, fontWeight: 700, marginBottom: 12 }}>🗓 Arquivo Diário ({dailyArchives.length} dias)</div>
+            <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+              {dailyArchives.map((a) => {
+                const isOpen = histOpenDay === a.day;
+                const pnlPos = (a.pnl || 0) >= 0;
+                return (
+                  <div key={a.id || a.day} style={{
+                    borderRadius: 10,
+                    background: pnlPos ? `${T.green}08` : `${T.red}08`,
+                    border: `1px solid ${pnlPos ? T.green : T.red}20`,
+                    overflow: "hidden",
+                  }}>
+                    <div
+                      onClick={() => setHistOpenDay(isOpen ? null : a.day)}
+                      style={{
+                        display: "grid", gridTemplateColumns: "1.4fr 1fr 1fr 1fr 0.4fr",
+                        gap: 12, padding: "10px 14px", alignItems: "center",
+                        fontSize: 12, cursor: "pointer",
+                      }}
+                    >
+                      <div>
+                        <div style={{ fontWeight: 700 }}>{a.day}</div>
+                        <div style={{ fontSize: 10, color: T.muted }}>{a.count} trades</div>
+                      </div>
+                      <div><div style={{ fontSize: 9, color: T.muted }}>P&L</div><div style={{ fontWeight: 700, color: pnlPos ? T.green : T.red }}>{sign(a.pnl || 0)}€{Math.abs(a.pnl || 0).toFixed(2)}</div></div>
+                      <div><div style={{ fontSize: 9, color: T.muted }}>Win Rate</div><div style={{ fontWeight: 700, color: T.gold }}>{(a.winRate || 0).toFixed(0)}%</div></div>
+                      <div><div style={{ fontSize: 9, color: T.muted }}>Wins</div><div style={{ fontWeight: 700 }}>{a.wins ?? 0}/{a.count}</div></div>
+                      <div style={{ textAlign: "right", color: T.muted, fontSize: 13 }}>{isOpen ? "▲" : "▼"}</div>
+                    </div>
+                    {isOpen && Array.isArray(a.trades) && (
+                      <div style={{ padding: "0 14px 12px", overflowX: "auto" }}>
+                        <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 10, minWidth: 560 }}>
+                          <thead>
+                            <tr style={{ borderBottom: `1px solid ${T.border}` }}>
+                              {["Ativo","Estratégia","Entrada","Saída","P&L","Status"].map(h => (
+                                <th key={h} style={{ padding: "6px 8px", textAlign: "left", color: T.muted, fontSize: 8, letterSpacing: "0.08em", textTransform: "uppercase", fontWeight: 600 }}>{h}</th>
+                              ))}
+                            </tr>
+                          </thead>
+                          <tbody>
+                            {a.trades.map((t, ti) => {
+                              const tp = (t.pnl || 0) >= 0;
+                              return (
+                                <tr key={t.id || ti} style={{ borderBottom: `1px solid ${T.border}55` }}>
+                                  <td style={{ padding: "6px 8px", fontWeight: 700 }}>{t.assetSym || t.assetId}</td>
+                                  <td style={{ padding: "6px 8px", color: T.muted }}>{t.strategy || t.stratId || "—"}</td>
+                                  <td style={{ padding: "6px 8px" }}>${t.entryPrice}</td>
+                                  <td style={{ padding: "6px 8px" }}>${t.closePrice ?? "—"}</td>
+                                  <td style={{ padding: "6px 8px", fontWeight: 700, color: tp ? T.green : T.red }}>{sign(t.pnl || 0)}€{Math.abs(t.pnl || 0).toFixed(2)}</td>
+                                  <td style={{ padding: "6px 8px", color: T.muted }}>{t.status}</td>
+                                </tr>
+                              );
+                            })}
+                          </tbody>
+                        </table>
+                      </div>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+          </Glass>
+        )}
+
         {/* Trades table */}
         {filtered.length === 0 ? (
           <Glass style={{ padding: "56px 24px", textAlign: "center" }}>
@@ -4145,8 +4214,13 @@ JSON puro:
       });
     }).catch(() => {});
     // Carregar estratégias guardadas
-    let unsubStrat = null, unsubSettings = null, unsubLive = null, unsubArch = null, unsubDt = null, unsubBot = null, unsubSig = null;
-    import("./firebase.js").then(({ subscribeStrategies, subscribeSetting: subSet }) => {
+    let unsubStrat = null, unsubSettings = null, unsubLive = null, unsubArch = null, unsubDt = null, unsubBot = null, unsubSig = null, unsubDaily = null;
+    import("./firebase.js").then(({ subscribeStrategies, subscribeSetting: subSet, subscribeArchives }) => {
+      if (subscribeArchives) {
+        unsubDaily = subscribeArchives(uid2, (arcs) => {
+          if (Array.isArray(arcs)) setDailyArchives(arcs);
+        });
+      }
       if (subscribeStrategies) {
         unsubStrat = subscribeStrategies(uid2, (strats) => {
           if (strats) {
@@ -4204,7 +4278,7 @@ JSON puro:
         if (val && typeof val === "object" && botActiveRef.current) setMarketSignals(val);
       });
     }).catch(() => {});
-    return () => { unsubTrades?.(); unsubBal?.(); unsubStrat?.(); unsubSettings?.(); unsubLive?.(); unsubArch?.(); unsubDt?.(); unsubBot?.(); unsubSig?.(); };
+    return () => { unsubTrades?.(); unsubBal?.(); unsubStrat?.(); unsubSettings?.(); unsubLive?.(); unsubArch?.(); unsubDt?.(); unsubBot?.(); unsubSig?.(); unsubDaily?.(); };
   }, [user]);
 
   // ── Persistência: guardar trade quando aberto ─────────────────────────────
@@ -4627,8 +4701,12 @@ JSON puro:
               return sum + (a ? (a.price - pos.entryPrice) * pos.units : 0);
             }, 0);
             const capInvestido = simPositions.reduce((s,p) => s+p.amount, 0);
-            const totalSim = simBalance + capInvestido + unrealSim;
-            const pnlTotal = totalSim - simCapital;
+            // P&L total = realizado (trades fechados) + não-realizado (abertas).
+            // NÃO usar (saldo+investido+unreal - simCapital): se o saldo no servidor
+            // e as posições visíveis não baterem certo (posições órfãs), isso
+            // inventaria perdas falsas como o antigo "-€160".
+            const realizadoSim = simClosed.reduce((s,t) => s + (t.pnl || 0), 0);
+            const pnlTotal = +(realizadoSim + unrealSim).toFixed(2);
             const roiTotal = simCapital > 0 ? (pnlTotal / simCapital) * 100 : 0;
             // Separar por origem
             const porOrigem = { manual: 0, estrategia: 0, daytrading: 0, aibrain: 0 };
@@ -4655,7 +4733,7 @@ JSON puro:
                 {/* Valor total + ROI */}
                 <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 8, marginBottom: 8 }}>
                   {[
-                    { l: "Valor Total",  v: `€${totalSim.toFixed(2)}`,                              c: T.text },
+                    { l: "Valor Total",  v: `€${(simCapital + pnlTotal).toFixed(2)}`,                  c: T.text },
                     { l: "P&L Total",    v: `${sign(pnlTotal)}€${Math.abs(pnlTotal).toFixed(2)}`,   c: pnlTotal>=0?T.green:T.red },
                     { l: "ROI",          v: `${sign(roiTotal)}${Math.abs(roiTotal).toFixed(1)}%`,    c: pnlTotal>=0?T.green:T.red },
                   ].map(s => (

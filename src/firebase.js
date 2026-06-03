@@ -94,3 +94,9 @@ export function subscribeStats(uid, callback) {
   const q = query(userCol(uid, "stats"), orderBy("savedAt", "desc"), limit(30));
   return onSnapshot(q, snap => callback(snap.docs.map(d => ({ ...d.data(), id: d.id }))));
 }
+
+// ── Arquivos diários (trades fechados arquivados pelo bot à meia-noite) ─────────
+export function subscribeArchives(uid, callback) {
+  const q = query(userCol(uid, "archives"), orderBy("day", "desc"), limit(90));
+  return onSnapshot(q, snap => callback(snap.docs.map(d => ({ ...d.data(), id: d.id }))));
+}
