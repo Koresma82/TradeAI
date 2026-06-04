@@ -32,7 +32,28 @@ function corsHeaders(origin) {
   };
 }
 
-// Verifica o ID token do Firebase contra a Google. Devolve { ok, uid } ou { ok:false, error }.
+// Verifica o ID token do Firebase. Devolve { ok, uid } ou { ok:false, error }.
+// Os Firebase ID tokens são JWTs assinados pela Google. Validamos a assinatura
+// contra as chaves públicas do Firebase (x509) e confimamos os claims (iss/aud/exp).
+const crypto = require("crypto");
+
+let _keysCache = { keys: null, exp: 0 };
+
+async function getGooglePublicKeys() {
+  // Cache das chaves públicas (a Google indica validade no Cache-Control).
+  if (_keysCache.keys && Date.now() < _keysCache.exp) return _keysCache.keys;
+  const r = await fetch("https://www.googleapis.com/robot/v1/metadata/x509/securetoken@system.gserviceaccount.com");
+  if (!r.ok) throw new Error("Não foi possível obter as chaves públicas da Google");
+  const keys = await r.json();
+  // Validade: 1h por defeito (suficiente; as chaves rodam devagar)
+  _keysCache = { keys, exp: Date.now() + 60 * 60 * 1000 };
+  return keys;
+}
+
+function b64urlDecode(str) {
+  return Buffer.from(str.replace(/-/g, "+").replace(/_/g, "/"), "base64");
+}
+
 async function verifyFirebaseToken(authHeader) {
   if (!authHeader || !authHeader.startsWith("Bearer ")) {
     return { ok: false, error: "Sem token de autenticação." };
@@ -41,22 +62,30 @@ async function verifyFirebaseToken(authHeader) {
   if (!idToken) return { ok: false, error: "Token vazio." };
 
   try {
-    // Endpoint público de verificação de tokens da Google.
-    const r = await fetch(
-      `https://www.googleapis.com/oauth2/v3/tokeninfo?id_token=${encodeURIComponent(idToken)}`
-    );
-    if (!r.ok) return { ok: false, error: "Token inválido ou expirado." };
-    const info = await r.json();
+    const parts = idToken.split(".");
+    if (parts.length !== 3) return { ok: false, error: "Token malformado." };
 
-    // O token tem de ter sido emitido para ESTE projeto Firebase.
-    const audOk = info.aud === PROJECT_ID;
-    const issOk = info.iss === `https://securetoken.google.com/${PROJECT_ID}`;
-    const notExpired = !info.exp || (Number(info.exp) * 1000 > Date.now());
+    const header  = JSON.parse(b64urlDecode(parts[0]).toString("utf8"));
+    const payload = JSON.parse(b64urlDecode(parts[1]).toString("utf8"));
 
-    if (!audOk || !issOk || !notExpired) {
-      return { ok: false, error: "Token não pertence a esta app." };
-    }
-    return { ok: true, uid: info.sub || info.user_id };
+    // 1. Validar claims
+    const audOk = payload.aud === PROJECT_ID;
+    const issOk = payload.iss === `https://securetoken.google.com/${PROJECT_ID}`;
+    const notExpired = payload.exp && (Number(payload.exp) * 1000 > Date.now());
+    if (!audOk || !issOk) return { ok: false, error: "Token não pertence a esta app." };
+    if (!notExpired)      return { ok: false, error: "Token expirado." };
+
+    // 2. Validar assinatura contra a chave pública correspondente ao 'kid'
+    const keys = await getGooglePublicKeys();
+    const cert = keys[header.kid];
+    if (!cert) return { ok: false, error: "Chave de assinatura não encontrada." };
+
+    const verifier = crypto.createVerify("RSA-SHA256");
+    verifier.update(`${parts[0]}.${parts[1]}`);
+    const sigOk = verifier.verify(cert, b64urlDecode(parts[2]));
+    if (!sigOk) return { ok: false, error: "Assinatura do token inválida." };
+
+    return { ok: true, uid: payload.sub || payload.user_id };
   } catch (e) {
     return { ok: false, error: "Falha a verificar token: " + e.message };
   }
