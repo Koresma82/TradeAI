@@ -37,7 +37,9 @@ export const onAuthChange    = (cb) => onAuthStateChanged(auth, cb);
 export async function getIdToken() {
   const u = auth.currentUser;
   if (!u) return null;
-  try { return await u.getIdToken(); } catch { return null; }
+  // forceRefresh=true: o Firebase renova o token se estiver perto de expirar,
+  // evitando 401 (Token inválido ou expirado) nas chamadas às functions.
+  try { return await u.getIdToken(true); } catch { return null; }
 }
 
 // ── Firestore helpers (prefixados com uid para dados por utilizador) ──────────

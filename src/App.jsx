@@ -9,15 +9,24 @@ import { AreaChart, Area, XAxis, YAxis, Tooltip, ResponsiveContainer, ReferenceL
 const AI_ENDPOINT = "/.netlify/functions/ai";
 
 async function callAI({ messages, system, max_tokens = 1000 }) {
-  const token = await getIdToken();
-  const res = await fetch(AI_ENDPOINT, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      ...(token ? { Authorization: `Bearer ${token}` } : {}),
-    },
-    body: JSON.stringify({ model: "claude-sonnet-4-20250514", max_tokens, system, messages }),
-  });
+  const doCall = async (forceToken) => {
+    const u = (await import("./firebase.js")).auth?.currentUser;
+    const token = u ? await u.getIdToken(forceToken).catch(() => null) : await getIdToken();
+    const res = await fetch(AI_ENDPOINT, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        ...(token ? { Authorization: `Bearer ${token}` } : {}),
+      },
+      body: JSON.stringify({ model: "claude-sonnet-4-20250514", max_tokens, system, messages }),
+    });
+    return res;
+  };
+  let res = await doCall(false);
+  // Se o token expirou (401), renova à força e tenta uma vez mais
+  if (res.status === 401) {
+    res = await doCall(true);
+  }
   const data = await res.json();
   if (!res.ok) throw new Error(data?.error?.message || data?.error || "Erro na API");
   const text = data.content?.[0]?.text || "{}";
