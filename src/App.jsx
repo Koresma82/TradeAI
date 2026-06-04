@@ -1265,15 +1265,34 @@ JSON puro — inclui TODOS os ativos relevantes de TODAS as categorias:
 
   // ── Investir numa sugestão AI directamente ─────────────────────────────────
   const investirSugestao = (op) => {
+    // Validar o ativo: o id tem de existir mesmo na lista. Se a IA devolver um id
+    // inválido (ex. "xag" em vez de "silver"), tenta mapear por símbolo/nome.
+    let asset = ASSETS.find(a => a.id === op.id);
+    if (!asset) {
+      const alvo = (op.id || op.nome || "").toLowerCase();
+      asset = ASSETS.find(a =>
+        a.sym.toLowerCase() === alvo ||
+        a.name.toLowerCase() === alvo ||
+        a.id.toLowerCase() === alvo
+      );
+    }
+    if (!asset) {
+      toast(`Não reconheço o ativo "${op.nome || op.id}". Não foi possível criar a estratégia.`, "error");
+      return;
+    }
+    if (asset.trade === false) {
+      toast(`${asset.name} não está disponível para negociação.`, "error");
+      return;
+    }
     const amount = aiSuggestions?.amount || calcTradeAmount();
     const slPct  = settingsRef.current?.stopLossPadrao    || 6;
     const tpPct  = settingsRef.current?.takeProfitPadrao  || 12;
     const s = {
       id:        uid(),
-      nome:      `${op.icone} ${op.nome}`,
+      nome:      `${asset.icon} ${asset.name}`,
       descricao: op.porque,
       logica:    `Entrada $${op.entrada} · SL $${op.sl} · TP $${op.tp}`,
-      ativos:    [op.id],
+      ativos:    [asset.id],
       compra:    0.5,
       perTrade:  amount,
       sl:        slPct,
@@ -1297,7 +1316,8 @@ JSON puro — inclui TODOS os ativos relevantes de TODAS as categorias:
       // Categorias selecionadas ([] = todas)
       const allowedCats = suggestCats.length > 0 ? suggestCats : ["Crypto","Commodity","ETF","Forex"];
       const filteredAssets = assets.filter(a => allowedCats.includes(a.cat));
-      const lines = filteredAssets.map(a => `${a.name}(${a.sym}):$${fmt(a.price,a.id)}(${pctFmt(a.change)})`).join(", ");
+      const lines = filteredAssets.map(a => `${a.name}(${a.sym})[id:${a.id}]:$${fmt(a.price,a.id)}(${pctFmt(a.change)})`).join(", ");
+      const validIds = filteredAssets.map(a => a.id).join(", ");
       const s     = settingsRef.current;
       const amount = calcTradeAmount();
       const nCats = allowedCats.length;
@@ -1311,8 +1331,9 @@ Categorias a analisar: ${allowedCats.join(", ")}
 Preços: ${lines}
 
 Dá ${nCats === 1 ? "6 oportunidades" : "as melhores oportunidades (até 6 por categoria)"} dos ativos listados acima. Inclui só ativos das categorias pedidas.
+IMPORTANTE: o campo "id" tem de ser EXATAMENTE um destes ids válidos: ${validIds}. Não inventes ids nem uses o símbolo.
 JSON puro:
-{"resumo":"análise 1 frase pt","momento":"BOM|NEUTRO|MAU","oportunidades":[{"id":"xag","nome":"Prata","icone":"🥈","sinal":"COMPRAR|AGUARDAR","porque":"razão simples 1-2 frases pt","confianca":82,"risco":"BAIXO|MÉDIO|ALTO","entrada":30.5,"sl":28.6,"tp":34.2,"retornoEsperado":12.1,"prazo":"3-7 dias"}]}` }],
+{"resumo":"análise 1 frase pt","momento":"BOM|NEUTRO|MAU","oportunidades":[{"id":"<um dos ids válidos>","nome":"Prata","icone":"🥈","sinal":"COMPRAR|AGUARDAR","porque":"razão simples 1-2 frases pt","confianca":82,"risco":"BAIXO|MÉDIO|ALTO","entrada":30.5,"sl":28.6,"tp":34.2,"retornoEsperado":12.1,"prazo":"3-7 dias"}]}` }],
       });
       setAiSuggestions({ ...result, geradoEm: new Date().toLocaleTimeString("pt-PT"), amount });
       setAiCost(p => +(p + (c1||0)).toFixed(5));
@@ -2924,10 +2945,10 @@ JSON: {"signals":[{"id":"btc","sinal":"COMPRAR|VENDER|AGUARDAR","razao":"1 frase
         ) : (
           <Glass style={{ padding: "20px", overflowX: "auto" }}>
             <SectionLabel>Trades — {histTab === "sim" ? "Simulação" : "Live"} · {histCat} ({filtered.length})</SectionLabel>
-            <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 11, minWidth: 820 }}>
+            <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 11, minWidth: 1040 }}>
               <thead>
                 <tr style={{ borderBottom: `1px solid ${T.border}` }}>
-                  {["Ativo","Cat.","Estratégia","Abertura","Entrada","Preço Atual","Investido","SL","TP","P&L","Status","Mercado"].map(h => (
+                  {["Ativo","Cat.","Estratégia","Abertura","Entrada","Preço Atual","Investido","SL","TP","P&L","%","IA","Hold","Status","Mercado"].map(h => (
                     <th key={h} style={{ padding: "8px 10px", textAlign: "left", color: T.muted, fontSize: 8, letterSpacing: "0.1em", textTransform: "uppercase", fontWeight: 600 }}>{h}</th>
                   ))}
                 </tr>
@@ -2950,6 +2971,45 @@ JSON: {"signals":[{"id":"btc","sinal":"COMPRAR|VENDER|AGUARDAR","razao":"1 frase
                       <td style={{ padding: "9px 10px", color: T.green }}>${t.tp}</td>
                       <td style={{ padding: "9px 10px" }}>
                         {pnl !== undefined && <span style={{ color: pnl >= 0 ? T.green : T.red, fontWeight: 700 }}>{sign(pnl)}{eur(pnl)}</span>}
+                      </td>
+                      <td style={{ padding: "9px 10px" }}>
+                        {(() => {
+                          // % de lucro sobre o investido
+                          if (pnl === undefined || !t.amount) return <span style={{ color: T.muted }}>—</span>;
+                          const pct = (pnl / t.amount) * 100;
+                          return <span style={{ color: pct >= 0 ? T.green : T.red, fontWeight: 700 }}>{sign(pct)}{Math.abs(pct).toFixed(2)}%</span>;
+                        })()}
+                      </td>
+                      <td style={{ padding: "9px 10px" }}>
+                        {(() => {
+                          // Sinal atual da IA para este ativo (só faz sentido em posições abertas)
+                          if (!isOpen) return <span style={{ color: T.muted }}>—</span>;
+                          const sig = (marketSignals || {})[t.assetId];
+                          if (!sig) return <span style={{ color: T.muted, fontSize: 10 }}>—</span>;
+                          const cor = sig.sinal === "COMPRAR" ? T.green : sig.sinal === "VENDER" ? T.red : T.gold;
+                          const txt = sig.sinal === "COMPRAR" ? "▲ Subir" : sig.sinal === "VENDER" ? "▼ Descer" : "● Manter";
+                          return <span style={{ color: cor, fontSize: 10, fontWeight: 600 }} title={sig.razao || ""}>{txt} {sig.confianca ? `${sig.confianca}%` : ""}</span>;
+                        })()}
+                      </td>
+                      <td style={{ padding: "9px 10px" }}>
+                        {isOpen ? (
+                          <button
+                            onClick={() => {
+                              const novoHold = !t.hold;
+                              // grava no Firestore — o bot lê e respeita (trava AI-EXIT e TP, mantém SL)
+                              if (user) import("./firebase.js").then(({ updateTrade }) =>
+                                updateTrade(user.uid, t.id, { hold: novoHold }).catch(()=>{}));
+                              toast(novoHold ? `🔒 Hold ligado em ${a?.sym || t.assetId} — deixa correr (SL mantém-se)` : `🔓 Hold desligado em ${a?.sym || t.assetId}`, novoHold ? "buy" : "info");
+                            }}
+                            style={{
+                              padding: "3px 9px", borderRadius: 6, fontSize: 9, fontWeight: 700, cursor: "pointer",
+                              fontFamily: "inherit",
+                              background: t.hold ? `${T.gold}22` : "transparent",
+                              border: `1px solid ${t.hold ? T.gold : T.border}`,
+                              color: t.hold ? T.gold : T.muted,
+                            }}
+                          >{t.hold ? "🔒 HOLD" : "○ Hold"}</button>
+                        ) : <span style={{ color: T.muted }}>—</span>}
                       </td>
                       <td style={{ padding: "9px 10px" }}>
                         {(() => {
