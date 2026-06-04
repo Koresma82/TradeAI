@@ -3684,6 +3684,7 @@ pm2 save && pm2 startup`}</CodeBlock>
             background: `${T.blue}12`, border: `1px solid ${T.blue}33`, borderRadius: 8,
             padding: "10px 18px", fontSize: 11, color: T.blue, cursor: "pointer", fontFamily: "inherit", fontWeight: 700,
           }}>📋 Copiar UID (para o bot)</button>
+          {simMode && (
           <button onClick={() => setConfirmModal({
             danger: true,
             icon: "🗑",
@@ -3692,6 +3693,7 @@ pm2 save && pm2 startup`}</CodeBlock>
             lines: ["Esta ação é irreversível", "As posições abertas serão fechadas", "As estratégias ativas serão apagadas", "Os trades de Day Trading serão apagados", "O saldo volta ao capital inicial"],
             confirmLabel: "Sim, apagar tudo",
             onConfirm: () => {
+              if (!simMode) { toast("Limpar só está disponível em Simulação", "error"); return; }
               const tradesToDelete = [...simPositions, ...simClosed];
               const stratsToDelete = strategies.map(s => s.id);
               setArchivedSims([]);
@@ -3722,6 +3724,7 @@ pm2 save && pm2 startup`}</CodeBlock>
             background: `${T.red}12`, border: `1px solid ${T.red}33`, borderRadius: 8,
             padding: "10px 18px", fontSize: 12, color: T.red, cursor: "pointer", fontFamily: "inherit", fontWeight: 700,
           }}>🗑 Limpar Simulações</button>
+          )}
           <div style={{ display: "flex", gap: 10 }}>
             <Btn color={T.muted} onClick={() => setSettingsLocal(null)}>Cancelar</Btn>
             <Btn color={T.green} solid onClick={save} style={{ padding: "11px 32px", fontSize: 14 }}>✓ Guardar</Btn>
