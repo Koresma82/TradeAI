@@ -469,7 +469,8 @@ export default function TradeAI() {
         // ⛔ Se o bot 24/7 está ativo e estamos em SIM, o BOT é a única autoridade de
         //    trading. O browser não abre nem fecha posições (evita conflitos de saldo).
         //    A app continua apenas a mostrar o que o bot escreve no Firestore.
-        if (isSim && botActiveRef.current) {
+        //    Vale para sim E live: se o bot 24/7 está vivo, ele é a única autoridade.
+        if (botActiveRef.current) {
           return t;
         }
 
@@ -807,7 +808,7 @@ Formato de resposta (JSON puro):
         system: "És um analista de mercados financeiros. Responde SEMPRE com JSON puro válido, sem markdown nem texto exterior.",
         messages: [{ role: "user", content:
 `Analisa estes mercados por categoria e dá as TOP recomendações para um investidor português.
-Saldo: €${balance.toFixed(0)} | Posições: ${positions.length} | P&L não realizado: €${unrealized.toFixed(2)}
+Saldo: €${activeBalance.toFixed(0)} | Posições: ${activePositions.length} | P&L não realizado: €${unrealized.toFixed(2)}
 
 Preços agrupados por categoria${liveData ? " (crypto em tempo real)" : " (simulados)"}:
 ${lines}
@@ -4245,21 +4246,32 @@ JSON puro:
     if (!user) return;
     const uid2 = user.uid;
     // Carregar posições simuladas abertas
-    let unsubTrades = null, unsubBal = null;
+    let unsubTrades = null, unsubBal = null, unsubBalLive = null;
     import("./firebase.js").then(({ subscribeTrades, subscribeSetting }) => {
       unsubTrades = subscribeTrades(uid2, (trades) => {
-        // Carregar trades do bot/servidor — sincroniza posições abertas SIM
-        const open    = trades.filter(t => t.status === "ABERTA" && t.mode === "sim");
-        const closed_ = trades.filter(t => t.status !== "ABERTA" && t.mode === "sim");
-        setSimPositions(open);
-        simPosRef.current = open;
-        setSimClosed(closed_);
+        // Carregar trades do bot/servidor — separa SIM de LIVE (paper/real).
+        // O bot escreve mode:"sim" em simulação e mode:"live" em paper/real.
+        const simOpen    = trades.filter(t => t.status === "ABERTA" && t.mode === "sim");
+        const simClosed_  = trades.filter(t => t.status !== "ABERTA" && t.mode === "sim");
+        const liveOpen   = trades.filter(t => t.status === "ABERTA" && t.mode === "live");
+        const liveClosed_ = trades.filter(t => t.status !== "ABERTA" && t.mode === "live");
+        setSimPositions(simOpen);
+        simPosRef.current = simOpen;
+        setSimClosed(simClosed_);
+        setPositions(liveOpen);
+        setClosed(liveClosed_);
         setDbLoaded(true);
       });
       unsubBal = subscribeSetting(uid2, "simBalance", (val) => {
         if (typeof val === "number" && val > 0) {
           setSimBalance(val);
           simBalRef.current = val;
+        }
+      });
+      unsubBalLive = subscribeSetting(uid2, "liveBalance", (val) => {
+        if (typeof val === "number" && val > 0) {
+          setBalance(val);
+          balRef.current = val;
         }
       });
     }).catch(() => {});
@@ -4328,7 +4340,7 @@ JSON puro:
         if (val && typeof val === "object" && botActiveRef.current) setMarketSignals(val);
       });
     }).catch(() => {});
-    return () => { unsubTrades?.(); unsubBal?.(); unsubStrat?.(); unsubSettings?.(); unsubLive?.(); unsubArch?.(); unsubDt?.(); unsubBot?.(); unsubSig?.(); unsubDaily?.(); };
+    return () => { unsubTrades?.(); unsubBal?.(); unsubBalLive?.(); unsubStrat?.(); unsubSettings?.(); unsubLive?.(); unsubArch?.(); unsubDt?.(); unsubBot?.(); unsubSig?.(); unsubDaily?.(); };
   }, [user]);
 
   // ── Persistência: guardar trade quando aberto ─────────────────────────────
