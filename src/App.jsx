@@ -601,7 +601,7 @@ export default function TradeAI() {
                   id: uid(), assetId: a.id, assetName: a.name, assetSym: a.sym,
                   entryPrice: a.price, units, amount: s.perTrade, peak: a.price,
                   strategy: s.nome, stratId: s.id, sl, tp,
-                  openedAt: new Date().toLocaleTimeString("pt-PT"), status: "ABERTA",
+                  openedAt: new Date().toLocaleTimeString("pt-PT"), openedTs: Date.now(), status: "ABERTA",
                   mode: isSim ? "sim" : "live",
                 };
                 setPos(p => { const next = [...p, pos]; if (isSim) simPosRef.current = next; return next; });
@@ -628,7 +628,7 @@ export default function TradeAI() {
           Object.values(sigs).forEach(sg => {
             if (!sg || sg.sinal !== "COMPRAR" || (sg.confianca || 0) < minConf) return;
             const a = upd.find(x => x.id === sg.id);
-            if (!a || !a.trade) return; // só ativos negociáveis
+            if (!a || !isTradeable(a.id)) return; // só ativos negociáveis (lista do bot)
             const key = `aibrain_${sg.id}`;
             if ((cds.current[key] || 0) > 0) { cds.current[key]--; return; }
             // não duplicar posição no mesmo ativo
@@ -644,7 +644,7 @@ export default function TradeAI() {
               id: uid(), assetId: a.id, assetName: a.name, assetSym: a.sym,
               entryPrice: a.price, units, amount: perTrade, peak: a.price,
               strategy: `🤖 AI Brain (${sg.confianca}%)`, stratId: "ai-brain", sl, tp,
-              openedAt: new Date().toLocaleTimeString("pt-PT"), status: "ABERTA",
+              openedAt: new Date().toLocaleTimeString("pt-PT"), openedTs: Date.now(), status: "ABERTA",
               mode: isSim ? "sim" : "live",
             };
             setPos(p => { const next = [...p, pos]; if (isSim) simPosRef.current = next; return next; });
@@ -1241,7 +1241,7 @@ JSON puro — inclui TODOS os ativos relevantes de TODAS as categorias:
             </Glass>
             <Glass style={{ padding: "20px" }}>
               <SectionLabel>Todos os Ativos (tradeable)</SectionLabel>
-              {assets.filter(a => a.trade).map(a => (
+              {assets.filter(a => isTradeable(a.id)).map(a => (
                 <div key={a.id} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "7px 0", borderBottom: `1px solid ${T.border}44` }}>
                   <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
                     <span style={{ fontSize: 17 }}>{a.icon}</span>
@@ -1280,8 +1280,8 @@ JSON puro — inclui TODOS os ativos relevantes de TODAS as categorias:
       toast(`Não reconheço o ativo "${op.nome || op.id}". Não foi possível criar a estratégia.`, "error");
       return;
     }
-    if (asset.trade === false) {
-      toast(`${asset.name} não está disponível para negociação.`, "error");
+    if (!isTradeable(asset.id)) {
+      toast(`${asset.name} ainda não está disponível para negociação pelo bot.`, "error");
       return;
     }
     const amount = aiSuggestions?.amount || calcTradeAmount();
@@ -1587,6 +1587,16 @@ JSON puro:
   const [brokerTab,     setBrokerTab]     = useState("alpaca"); // guia: corretora
   const [settingsLocal, setSettingsLocal] = useState(null);   // edição settings (top-level)
   const [marketSignals, setMarketSignals] = useState({});
+  // Lista de ativos negociáveis publicada pelo bot (sync app↔bot). Fonte de verdade:
+  // o bot só publica ativos que consegue mesmo negociar (têm preço). Conjunto de ids.
+  const [botTradeable, setBotTradeable] = useState(null); // null = ainda não recebido
+  // É negociável? Prefere a lista publicada pelo bot (fonte de verdade); se ainda
+  // não chegou, usa o flag 'trade' hardcoded como fallback.
+  const isTradeable = useCallback((assetId) => {
+    if (botTradeable) return botTradeable.has(assetId);
+    const a = ASSETS.find(x => x.id === assetId);
+    return a?.trade === true;
+  }, [botTradeable]);
   const marketSignalsRef = useRef({});
   useEffect(() => { marketSignalsRef.current = marketSignals; }, [marketSignals]);
   // Histórico do sinal anterior por ativo (para detetar "flip" COMPRAR→VENDER)
@@ -1740,7 +1750,7 @@ JSON: {"signals":[{"id":"btc","sinal":"COMPRAR|VENDER|AGUARDAR","razao":"1 frase
         id: uid(), assetId, assetName: a?.name || assetId, assetSym: a?.sym || assetId,
         entryPrice: price, units, amount, sl, tp, peak: price,
         strategy: "Manual (Mercados)", stratId: "manual",
-        openedAt: new Date().toLocaleTimeString("pt-PT"), status: "ABERTA",
+        openedAt: new Date().toLocaleTimeString("pt-PT"), openedTs: Date.now(), status: "ABERTA",
         mode: isSim ? "sim" : "live",
       };
       if (isSim) {
@@ -2150,7 +2160,7 @@ JSON: {"signals":[{"id":"btc","sinal":"COMPRAR|VENDER|AGUARDAR","razao":"1 frase
       {/* Cards grid — top 15 per category, sorted by movement */}
       <div className="resp-grid-2" style={{ display: "grid", gridTemplateColumns: "repeat(2,1fr)", gap: 14 }}>
         {(mktCatTab === "Todos"
-          ? assets.filter(a => a.trade)
+          ? assets.filter(a => isTradeable(a.id))
           : [...assets].filter(a => a.cat === mktCatTab)
               .map(a => ({ ...a, _live: mktData[a.id] || {} }))
               .sort((a,b) => Math.abs((b._live?.change ?? b.change)) - Math.abs((a._live?.change ?? a.change)))
@@ -2529,7 +2539,7 @@ JSON: {"signals":[{"id":"btc","sinal":"COMPRAR|VENDER|AGUARDAR","razao":"1 frase
                 </div>
                 <div style={{ fontSize:11, color:T.muted, marginBottom:8 }}>${fmt(a.price, a.id)}</div>
                 {sig?.razao && <div style={{ fontSize:9, color:T.muted, marginBottom:8, lineHeight:1.4, fontStyle:"italic" }}>{sig.razao.slice(0,60)}…</div>}
-                {a.trade ? (
+                {isTradeable(a.id) ? (
                   <button onClick={() => { setOrderModal({ assetId:a.id, side:"BUY" }); setOrderAmount(calcTradeAmount()); setTab("markets"); }} style={{
                     width:"100%", background:`${T.green}18`, border:`1px solid ${T.green}33`,
                     borderRadius:6, padding:"5px 0", fontSize:10, color:T.green,
@@ -3930,7 +3940,7 @@ JSON puro:
                 id: uid(), assetId: a.id, assetName: a.name, assetSym: a.sym,
                 action: "COMPRAR", entryPrice: price, units, amount: dtAmount,
                 sl, tp, strategy: `DayTrade — ${op.previsao?.slice(0,40)}`,
-                openedAt: new Date().toLocaleTimeString("pt-PT"), status: "ABERTA",
+                openedAt: new Date().toLocaleTimeString("pt-PT"), openedTs: Date.now(), status: "ABERTA",
                 mode: simMode ? "sim" : "live",
               };
               setDtTrades(p => [trade, ...p]);
@@ -4318,7 +4328,7 @@ JSON puro:
     if (!user) return;
     const uid2 = user.uid;
     // Carregar posições simuladas abertas
-    let unsubTrades = null, unsubBal = null, unsubBalLive = null;
+    let unsubTrades = null, unsubBal = null, unsubBalLive = null, unsubTradeable = null;
     import("./firebase.js").then(({ subscribeTrades, subscribeSetting }) => {
       unsubTrades = subscribeTrades(uid2, (trades) => {
         // Carregar trades do bot/servidor — separa SIM de LIVE (paper/real).
@@ -4327,8 +4337,16 @@ JSON puro:
         const simClosed_  = trades.filter(t => t.status !== "ABERTA" && t.mode === "sim");
         const liveOpen   = trades.filter(t => t.status === "ABERTA" && t.mode === "live");
         const liveClosed_ = trades.filter(t => t.status !== "ABERTA" && t.mode === "live");
-        setSimPositions(simOpen);
-        simPosRef.current = simOpen;
+        // Preservar posições locais MUITO recentes (últimos 10s) que ainda não
+        // apareceram no snapshot do Firestore — evita que uma compra manual
+        // "desapareça" do ecrã por causa da latência de propagação.
+        const idsFb = new Set(simOpen.map(t => t.id));
+        const recentesLocais = (simPosRef.current || []).filter(p =>
+          !idsFb.has(p.id) && p.openedTs && (Date.now() - p.openedTs < 10000)
+        );
+        const simOpenMerged = [...simOpen, ...recentesLocais];
+        setSimPositions(simOpenMerged);
+        simPosRef.current = simOpenMerged;
         setSimClosed(simClosed_);
         setPositions(liveOpen);
         setClosed(liveClosed_);
@@ -4344,6 +4362,11 @@ JSON puro:
         if (typeof val === "number" && val > 0) {
           setBalance(val);
           balRef.current = val;
+        }
+      });
+      unsubTradeable = subscribeSetting(uid2, "tradeableAssets", (val) => {
+        if (Array.isArray(val) && val.length) {
+          setBotTradeable(new Set(val.map(a => a.id)));
         }
       });
     }).catch(() => {});
@@ -4412,7 +4435,7 @@ JSON puro:
         if (val && typeof val === "object" && botActiveRef.current) setMarketSignals(val);
       });
     }).catch(() => {});
-    return () => { unsubTrades?.(); unsubBal?.(); unsubBalLive?.(); unsubStrat?.(); unsubSettings?.(); unsubLive?.(); unsubArch?.(); unsubDt?.(); unsubBot?.(); unsubSig?.(); unsubDaily?.(); };
+    return () => { unsubTrades?.(); unsubBal?.(); unsubBalLive?.(); unsubTradeable?.(); unsubStrat?.(); unsubSettings?.(); unsubLive?.(); unsubArch?.(); unsubDt?.(); unsubBot?.(); unsubSig?.(); unsubDaily?.(); };
   }, [user]);
 
   // ── Persistência: guardar trade quando aberto ─────────────────────────────
