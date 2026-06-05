@@ -116,6 +116,15 @@ function isMarketOpen(id) {
 }
 
 // ─── ASSETS ──────────────────────────────────────────────────────────────────
+// Qual broker trata cada ativo (espelha o routing do bot). Usado para position
+// sizing por saldo de broker. Crypto → alpaca (default); resto → alpaca.
+const CRYPTO_ASSET_IDS = new Set(["btc","eth","bnb","sol","xrp","doge","ada","avax","dot","link"]);
+function brokerForAsset(assetId) {
+  // Default igual ao DEFAULT_ROUTING do bot: tudo na Alpaca. Se mudares o routing
+  // no bot (ex.: crypto na Binance), ajusta aqui para a sugestão bater certo.
+  return CRYPTO_ASSET_IDS.has(assetId) ? "alpaca" : "alpaca";
+}
+
 const ASSETS = [
   { id:"btc",    name:"Bitcoin",        sym:"BTC",     cat:"Crypto",    base:67420,  icon:"₿",  vol:0.0038, cg:"bitcoin",         trade:true  },
   { id:"eth",    name:"Ethereum",       sym:"ETH",     cat:"Crypto",    base:3580,   icon:"Ξ",  vol:0.0045, cg:"ethereum",        trade:true  },
@@ -271,6 +280,8 @@ export default function TradeAI() {
   const [dailyArchives, setDailyArchives] = useState([]); // arquivos diários (bot, à meia-noite)
   const [simMode, setSimMode] = useState(true);   // true = simulação | false = live real
   const simModeRef = useRef(true);
+  const [brokerBalances, setBrokerBalances] = useState(null); // { alpaca: n, binance: n, ... } via Firestore (bot)
+  const brokerBalancesRef = useRef(null);
   const [liveSettings, setLiveSettings] = useState({      // definições separadas para live
     capitalTotal: 1000, modoValor: "fixo", valorFixo: 50,
     percentagem: 3, riscoPerfil: "conservador",
@@ -380,11 +391,45 @@ export default function TradeAI() {
     return s.valorFixo || 100;
   }, []); // sem dependências — usa só refs
 
+  // ── Sugestão de quantia a investir, com base em: perfil de risco (Definições),
+  //    confiança da IA e saldo DISPONÍVEL do broker que vai executar o ativo.
+  //    Em sim/sem broker usa o saldo livre da simulação. Devolve € a investir.
+  const suggestInvestAmount = useCallback((assetId, confianca) => {
+    const s   = simModeRef.current ? settingsRef.current : liveSettingsRef.current;
+    // Saldo disponível: do broker (se a app o tiver via Firestore) ou da simulação.
+    let avail = simModeRef.current ? simBalRef.current : balRef.current;
+    const bb = brokerBalancesRef.current; // { alpaca: 123, binance: 45, ... } ou null
+    if (!simModeRef.current && bb) {
+      const bid = brokerForAsset(assetId); // qual broker trata este ativo
+      if (bid && typeof bb[bid] === "number") avail = bb[bid];
+    }
+    if (!avail || avail <= 0) return 10;
+
+    const perfil = (s?.riscoPerfil || "moderado").toLowerCase();
+    // Teto por posição (% do saldo) e fração-base por perfil.
+    const PERFIL = {
+      conservador: { teto: 0.10, base: 0.04 },
+      moderado:    { teto: 0.20, base: 0.08 },
+      agressivo:   { teto: 0.33, base: 0.14 },
+    };
+    const cfg = PERFIL[perfil] || PERFIL.moderado;
+
+    // Escalão de confiança (a IA dá 0–100). Multiplica a fração-base.
+    const c = Math.max(0, Math.min(100, confianca || 0));
+    const mult = c >= 90 ? 2.0 : c >= 80 ? 1.5 : c >= 70 ? 1.1 : c >= 60 ? 0.8 : 0.5;
+
+    let amount = avail * cfg.base * mult;
+    amount = Math.min(amount, avail * cfg.teto); // nunca acima do teto do perfil
+    amount = Math.max(10, Math.min(amount, avail)); // mínimo €10, nunca mais que o saldo
+    return +amount.toFixed(2);
+  }, []);
+
   // Stable refs for interval
 
 
   useEffect(() => { balRef.current = balance; }, [balance]);
   useEffect(() => { simModeRef.current = simMode; }, [simMode]);
+  useEffect(() => { brokerBalancesRef.current = brokerBalances; }, [brokerBalances]);
   useEffect(() => { tabRef.current = tab; }, [tab]);
   useEffect(() => { simBalRef.current = simBalance; }, [simBalance]);
   useEffect(() => { liveSettingsRef.current = liveSettings; }, [liveSettings]);
@@ -530,10 +575,12 @@ export default function TradeAI() {
 
           if (a.price <= p2.sl) {
             const pnl = (p2.sl - p2.entryPrice) * p2.units;
-            const wasTrail = p2.sl > pos.entryPrice && trailingOn;
+            // Se o SL está acima da entrada, este fecho protegeu lucro → TRAIL.
+            // (não depende do toggle estar ligado neste instante)
+            const wasTrail = p2.sl > pos.entryPrice;
             toClose.push({ ...p2, status: wasTrail ? "TRAIL" : "SL", closePrice: p2.sl, closedAt: new Date().toLocaleTimeString("pt-PT"), closedTs: Date.now(), pnl });
             setBal(b => { const n = +(b + p2.amount + pnl).toFixed(2); balRefCur.current = n; return n; });
-            toast(`${wasTrail ? "🔒 Trailing" : "🛑 SL"} ${a.sym} — ${sign(pnl)}${eur(pnl)}`, pnl >= 0 ? "success" : "warn");
+            toast(`${wasTrail ? "📈 Trailing" : "🛑 SL"} ${a.sym} — ${sign(pnl)}${eur(pnl)}`, pnl >= 0 ? "success" : "warn");
           } else if (a.price >= p2.tp) {
             const pnl = (p2.tp - p2.entryPrice) * p2.units;
             toClose.push({ ...p2, status: "TP", closePrice: p2.tp, closedAt: new Date().toLocaleTimeString("pt-PT"), closedTs: Date.now(), pnl });
@@ -587,7 +634,13 @@ export default function TradeAI() {
               if ((cds.current[key] || 0) > 0) { cds.current[key]--; return; }
               const a = upd.find(x => x.id === aid);
               if (!a) return;
-              if (stratOpen + openedThisTick >= maxStrat) return; // limite atingido
+              if (stratOpen + openedThisTick >= maxStrat) return; // limite global atingido
+              // Limite por ativo: no máximo 3 posições de estratégia no mesmo ativo,
+              // para evitar que um só ativo (ex.: ADA) ocupe todos os slots — sete
+              // entradas iguais no mesmo ativo são, na prática, uma aposta grande só.
+              const sameAssetOpen = (isSim ? simPosRef.current : posRef.current)
+                .filter(p => p.assetId === aid && p.stratId && p.stratId !== "manual" && p.stratId !== "daytrading").length;
+              if (sameAssetOpen >= 3) return;
               // Máximo de referência: o maior entre o rolling-high e o pico do histórico visível.
               const histHigh = a.hist.length ? Math.max(...a.hist.map(pt => pt.v)) : a.price;
               const high     = Math.max(highs.current[aid]?.p || a.price, histHigh);
@@ -770,7 +823,18 @@ Formato de resposta (JSON puro):
       // ── Saneamento da estratégia gerada pela IA ──
       const validIds = ASSETS.map(a => a.id);
       let ativosOk = Array.isArray(obj2.ativos) ? obj2.ativos.filter(id => validIds.includes(id)) : [];
-      if (ativosOk.length === 0) ativosOk = ["btc", "eth"]; // fallback seguro
+      // Se a IA devolveu ativos genéricos (btc/eth) mas o NOME da estratégia indica
+      // outro ativo, infere o ativo certo a partir do nome/descrição. Evita que a
+      // "Prata" ou "Gás Natural" fiquem com BTC/ETH.
+      const txt = `${obj2.nome || ""} ${obj2.descricao || ""}`.toLowerCase();
+      const nameMatch = ASSETS.find(a =>
+        txt.includes(a.name.toLowerCase()) || txt.includes(a.sym.toLowerCase())
+      );
+      if (nameMatch && !ativosOk.includes(nameMatch.id)) {
+        // O ativo do nome manda: substitui os genéricos.
+        ativosOk = [nameMatch.id];
+      }
+      if (ativosOk.length === 0) ativosOk = nameMatch ? [nameMatch.id] : ["btc", "eth"];
       // Queda de compra: limitar a 0.5–3% para garantir que dispara em tempo útil
       let compraOk = Number(obj2.compra);
       if (!compraOk || isNaN(compraOk)) compraOk = 1.5;
@@ -948,8 +1012,10 @@ JSON puro — inclui TODOS os ativos relevantes de TODAS as categorias:
             <div style={{ display:"flex", gap:8, flexWrap:"wrap", alignItems:"center", padding:"0 4px" }}>
               <span style={{ fontSize:10, color:T.muted, marginRight:2 }}>APIs:</span>
               {pill("Cérebro AI (Groq)", h.groq?.ok ? "ok" : "fail", groqDet)}
-              {pill("Stooq", fonteEstado(h.stooq), h.stooq?.err ? "rede" : null)}
+              {pill("Binance", fonteEstado(h.binance), h.binance?.err ? "rede" : null)}
               {pill("CoinGecko", fonteEstado(h.coingecko), h.coingecko?.err ? "rede" : null)}
+              {h.twelvedata && h.twelvedata.ok !== null && pill("TwelveData", fonteEstado(h.twelvedata), h.twelvedata?.err ? "rede" : null)}
+              {h.stooq && h.stooq.ok !== null && pill("Stooq", fonteEstado(h.stooq), h.stooq?.err ? "rede" : null)}
             </div>
           );
         })()}
@@ -963,6 +1029,28 @@ JSON puro — inclui TODOS os ativos relevantes de TODAS as categorias:
             <div>
               <div style={{ fontSize: 10, color: T.aLight, letterSpacing: "0.14em", textTransform: "uppercase", marginBottom: 8 }}>Portfólio Total</div>
               <div style={{ fontSize: 40, fontWeight: 800, letterSpacing: "-0.03em" }}>€{portfolioV.toFixed(2)}</div>
+              {brokerBalances && Object.keys(brokerBalances).length > 0 && (
+                <div style={{ display:"flex", gap:8, flexWrap:"wrap", marginTop:8 }}>
+                  {Object.entries(brokerBalances).map(([bid, bal]) => (
+                    <div key={bid} style={{
+                      display:"flex", alignItems:"center", gap:6, padding:"4px 10px", borderRadius:8,
+                      background:"rgba(255,255,255,0.05)", border:`1px solid ${T.border}`,
+                    }}>
+                      <span style={{ fontSize:10, color:T.muted, textTransform:"capitalize" }}>{bid}</span>
+                      <span style={{ fontSize:12, fontWeight:700, color:T.text }}>€{(+bal).toFixed(2)}</span>
+                    </div>
+                  ))}
+                  <div style={{
+                    display:"flex", alignItems:"center", gap:6, padding:"4px 10px", borderRadius:8,
+                    background:`${T.accent}12`, border:`1px solid ${T.accent}33`,
+                  }}>
+                    <span style={{ fontSize:10, color:T.aLight }}>Total brokers</span>
+                    <span style={{ fontSize:12, fontWeight:800, color:T.text }}>
+                      €{Object.values(brokerBalances).reduce((s,v)=>s+(+v||0),0).toFixed(2)}
+                    </span>
+                  </div>
+                </div>
+              )}
               <div style={{ marginTop: 8, display: "flex", gap: 10, alignItems: "center" }}>
                 <span style={{ color: totalPnl >= 0 ? T.green : T.red, fontWeight: 700, fontSize: 15 }}>{sign(totalPnl)}{eur(totalPnl)}</span>
                 <span style={{ color: T.muted, fontSize: 12 }}>capital configurado €{capitalInicialDisplay.toLocaleString()}</span>
@@ -1122,7 +1210,7 @@ JSON puro — inclui TODOS os ativos relevantes de TODAS as categorias:
         {hasPositions ? (
           <>
             <div style={{ fontSize: 12, fontWeight: 700, color: T.aLight }}>
-              📂 Os meus Investimentos — {myPositions.length} posição{myPositions.length > 1 ? "ões" : ""} aberta{myPositions.length > 1 ? "s" : ""}
+              📂 Os meus Investimentos — {myPositions.length} {myPositions.length === 1 ? "posição aberta" : "posições abertas"}
             </div>
             <div className="resp-grid-2" style={{ display: "grid", gridTemplateColumns: "repeat(2,1fr)", gap: 12 }}>
               {myPositions.map(pos => {
@@ -1580,6 +1668,17 @@ JSON puro:
   const [mktLastAt,  setMktLastAt]  = useState(null);
   const [orderModal,    setOrderModal]    = useState(null);
   const [orderAmount,   setOrderAmount]   = useState(100);
+  // Ao abrir o modal de COMPRA, sugere a quantia com base no perfil + confiança IA
+  // + saldo do broker. O utilizador pode sempre alterar.
+  useEffect(() => {
+    if (orderModal && orderModal.side === "BUY") {
+      const sig  = marketSignalsRef.current?.[orderModal.assetId];
+      const conf = sig?.confianca ?? sig?.confidence ?? 0;
+      const sug  = suggestInvestAmount(orderModal.assetId, conf);
+      setOrderAmount(sug);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [orderModal]);
   const [aiCost,        setAiCost]        = useState(0);
   const [groqTokens,    setGroqTokens]    = useState(0); // tokens Groq usados nesta sessão (app)
   const [aiProvider,    setAiProvider]    = useState("auto"); // "auto"|"claude"|"groq"
@@ -2084,7 +2183,7 @@ JSON: {"signals":[{"id":"btc","sinal":"COMPRAR|VENDER|AGUARDAR","razao":"1 frase
                     <div><div style={{ fontSize:9, color:T.muted }}>ENTRADA</div><div style={{ fontWeight:600, fontSize:12 }}>${t.entryPrice?.toFixed(2)}</div></div>
                     <div><div style={{ fontSize:9, color:T.muted }}>SAÍDA</div><div style={{ fontWeight:600, fontSize:12 }}>${(+t.closePrice).toFixed(2)}</div></div>
                     <div><div style={{ fontSize:9, color:T.muted }}>INVESTIDO</div><div style={{ fontWeight:600 }}>€{t.amount}</div></div>
-                    <div><Badge label={t.status||"MANUAL"} color={t.status==="SL"?T.red:t.status==="TP"?T.green:(t.pnl||0)>=0?T.green:T.red}/></div>
+                    <div><Badge label={(() => { const win=(t.pnl||0)>=0; if(t.status==="TP")return "✓ TP"; if(t.status==="MANUAL")return "✓ Manual"; if(t.status==="AI-EXIT")return "🤖 AI"; if(t.status==="TRAIL"||(t.status==="SL"&&win))return "📈 Trailing"; if(t.status==="SL")return "🛑 SL"; return t.status||"MANUAL"; })()} color={t.status==="SL"&&(t.pnl||0)<0?T.red:(t.pnl||0)>=0?T.green:T.red}/></div>
                     <div style={{ textAlign:"right" }}>
                       <div style={{ fontSize:16, fontWeight:800, color:col }}>{sign(t.pnl||0)}€{Math.abs(t.pnl||0).toFixed(2)}</div>
                       <div style={{ fontSize:10, color:col }}>{sign((t.pnl||0)/t.amount*100)}{Math.abs((t.pnl||0)/t.amount*100).toFixed(1)}%</div>
@@ -2421,6 +2520,22 @@ JSON: {"signals":[{"id":"btc","sinal":"COMPRAR|VENDER|AGUARDAR","razao":"1 frase
                 <div style={{ marginTop:8, fontSize:11, color:T.muted }}>
                   ≈ {units} {a?.sym} · Saldo disponível: €{simMode ? simBalance.toFixed(2) : balance.toFixed(2)}
                 </div>
+                {isBuy && (() => {
+                  const conf = sig?.confianca ?? sig?.confidence ?? 0;
+                  const perfil = (settingsRef.current?.riscoPerfil || "moderado");
+                  const sug = suggestInvestAmount(orderModal.assetId, conf);
+                  return (
+                    <div style={{ marginTop:6, fontSize:10, color:T.aLight, display:"flex", alignItems:"center", gap:8, flexWrap:"wrap" }}>
+                      <span>💡 Sugerido: <b style={{color:T.text}}>€{sug}</b> (perfil {perfil}{conf?`, confiança ${conf}%`:""})</span>
+                      {amt !== sug && (
+                        <button onClick={() => setOrderAmount(sug)} style={{
+                          background:`${col}18`, border:`1px solid ${col}44`, borderRadius:5,
+                          padding:"2px 8px", fontSize:9, color:col, cursor:"pointer", fontFamily:"inherit", fontWeight:700,
+                        }}>usar</button>
+                      )}
+                    </div>
+                  );
+                })()}
                 {/* Quick amount buttons */}
                 <div style={{ display:"flex", gap:6, marginTop:10, flexWrap:"wrap" }}>
                   {[50,100,200,500,1000].map(v => (
@@ -3040,15 +3155,22 @@ JSON: {"signals":[{"id":"btc","sinal":"COMPRAR|VENDER|AGUARDAR","razao":"1 frase
                       </td>
                       <td style={{ padding: "9px 10px" }}>
                         {(() => {
+                          const pnlVal = t.pnl !== undefined ? t.pnl : t.curPnl;
+                          const win = (pnlVal || 0) >= 0;
+                          // Um stop que fechou COM lucro foi, na prática, um trailing a proteger
+                          // ganhos → mostra como TRAIL (verde). Só um stop COM perda é SL (vermelho).
+                          const isTrailWin = (t.status === "TRAIL") || (t.status === "SL" && win);
+                          const isRealSL   = t.status === "SL" && !win;
                           const lbl = isOpen ? "ABERTA"
-                            : t.status === "TP" ? "✓ TP"
-                            : t.status === "MANUAL" ? "✓ Manual"
-                            : t.status === "TRAIL" ? "🔒 Trailing"
+                            : t.status === "TP"      ? "✓ TP"
+                            : t.status === "MANUAL"  ? "✓ Manual"
                             : t.status === "AI-EXIT" ? "🤖 AI"
-                            : "✗ SL";
+                            : isTrailWin             ? "📈 Trailing"
+                            : isRealSL               ? "🛑 SL"
+                            : win ? "✓ Fechado" : "✗ Fechado";
                           const c = isOpen ? T.blue
-                            : t.status === "SL" ? T.red
-                            : (t.pnl || 0) >= 0 ? T.green : T.red;
+                            : isRealSL ? T.red
+                            : win ? T.green : T.red;
                           return <Badge label={lbl} color={c} />;
                         })()}
                       </td>
@@ -4388,7 +4510,7 @@ JSON puro:
       });
     }).catch(() => {});
     // Carregar estratégias guardadas
-    let unsubStrat = null, unsubSettings = null, unsubLive = null, unsubArch = null, unsubDt = null, unsubBot = null, unsubSig = null, unsubDaily = null;
+    let unsubStrat = null, unsubSettings = null, unsubLive = null, unsubArch = null, unsubDt = null, unsubBot = null, unsubSig = null, unsubDaily = null, unsubBrokers = null;
     import("./firebase.js").then(({ subscribeStrategies, subscribeSetting: subSet, subscribeArchives }) => {
       if (subscribeArchives) {
         unsubDaily = subscribeArchives(uid2, (arcs) => {
@@ -4447,12 +4569,16 @@ JSON puro:
       unsubBot = subSet(uid2, "botStatus", (val) => {
         if (val && typeof val === "object") setBotStatus(val);
       });
+      unsubBrokers = subSet(uid2, "brokerBalances", (val) => {
+        // { alpaca: 123.45, binance: 67.89, ... } — escrito pelo bot em paper/live
+        if (val && typeof val === "object") setBrokerBalances(val);
+      });
       unsubSig = subSet(uid2, "marketSignals", (val) => {
         // Só usar os sinais do bot quando ele está ativo (senão a app gera os seus)
         if (val && typeof val === "object" && botActiveRef.current) setMarketSignals(val);
       });
     }).catch(() => {});
-    return () => { unsubTrades?.(); unsubBal?.(); unsubBalLive?.(); unsubTradeable?.(); unsubStrat?.(); unsubSettings?.(); unsubLive?.(); unsubArch?.(); unsubDt?.(); unsubBot?.(); unsubSig?.(); unsubDaily?.(); };
+    return () => { unsubTrades?.(); unsubBal?.(); unsubBalLive?.(); unsubTradeable?.(); unsubStrat?.(); unsubSettings?.(); unsubLive?.(); unsubArch?.(); unsubDt?.(); unsubBot?.(); unsubSig?.(); unsubDaily?.(); unsubBrokers?.(); };
   }, [user]);
 
   // ── Persistência: guardar trade quando aberto ─────────────────────────────
@@ -4815,12 +4941,30 @@ JSON puro:
           <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: simMinimized ? 0 : 12 }}>
             <div style={{ display: "flex", alignItems: "center", gap: 7 }}>
               <div style={{ width: 7, height: 7, borderRadius: "50%", background: T.green, animation: "pulse 2s infinite" }} />
-              <span style={{ fontSize: 11, fontWeight: 700, color: T.green, letterSpacing: "0.09em" }}>SIMULAÇÃO EM CURSO</span>
-              {simMinimized && (
-                <span style={{ fontSize:11, color:simBalance>=simCapital?T.green:T.red, fontWeight:700, marginLeft:6 }}>
-                  €{simBalance.toFixed(2)} ({sign(simBalance-simCapital)}{Math.abs(((simBalance-simCapital)/simCapital)*100).toFixed(1)}%)
-                </span>
-              )}
+              <span style={{ fontSize: 11, fontWeight: 700, color: T.green, letterSpacing: "0.09em" }}>{
+                (() => {
+                  const m = (botStatus?.mode || "").toLowerCase();
+                  if (!simMode) return m === "real" ? "LIVE EM CURSO" : m === "paper" ? "PAPER EM CURSO" : "LIVE EM CURSO";
+                  return "SIMULAÇÃO EM CURSO";
+                })()
+              }</span>
+              {simMinimized && (() => {
+                // Valor TOTAL da simulação = saldo livre + investido + P&L não realizado.
+                // (antes usava só o saldo livre, dando uma % errada tipo -82%)
+                const simInvested   = simPositions.reduce((s, p) => s + (p.amount || 0), 0);
+                const simUnrealized = simPositions.reduce((s, p) => {
+                  const a = ASSETS.find(x => x.id === p.assetId);
+                  const px = a ? (mktData[a.id]?.price ?? a.price) : null;
+                  return s + (px ? (px - p.entryPrice) * p.units : 0);
+                }, 0);
+                const simEquity = simBalance + simInvested + simUnrealized;
+                const pct = simCapital > 0 ? ((simEquity - simCapital) / simCapital) * 100 : 0;
+                return (
+                  <span style={{ fontSize:11, color:simEquity>=simCapital?T.green:T.red, fontWeight:700, marginLeft:6 }}>
+                    €{simEquity.toFixed(2)} ({sign(simEquity-simCapital)}{Math.abs(pct).toFixed(1)}%)
+                  </span>
+                );
+              })()}
             </div>
             <div style={{ display:"flex", gap:6 }}>
               <button onClick={() => setSimMinimized(p => !p)}
