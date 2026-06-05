@@ -522,7 +522,7 @@ export default function TradeAI() {
           const sg = sigs[pos.assetId];
           if (exitOnFlip && sg && sg.sinal === "VENDER" && (sg.confianca || 0) >= flipConf && a.price > p2.sl) {
             const pnl = (a.price - p2.entryPrice) * p2.units;
-            toClose.push({ ...p2, status: "AI-EXIT", closePrice: a.price, closedAt: new Date().toLocaleTimeString("pt-PT"), pnl });
+            toClose.push({ ...p2, status: "AI-EXIT", closePrice: a.price, closedAt: new Date().toLocaleTimeString("pt-PT"), closedTs: Date.now(), pnl });
             setBal(b => { const n = +(b + p2.amount + pnl).toFixed(2); balRefCur.current = n; return n; });
             toast(`🤖 IA fechou ${a.sym} (sinal mudou) ${sign(pnl)}${eur(pnl)}`, pnl >= 0 ? "success" : "warn");
             return;
@@ -531,12 +531,12 @@ export default function TradeAI() {
           if (a.price <= p2.sl) {
             const pnl = (p2.sl - p2.entryPrice) * p2.units;
             const wasTrail = p2.sl > pos.entryPrice && trailingOn;
-            toClose.push({ ...p2, status: wasTrail ? "TRAIL" : "SL", closePrice: p2.sl, closedAt: new Date().toLocaleTimeString("pt-PT"), pnl });
+            toClose.push({ ...p2, status: wasTrail ? "TRAIL" : "SL", closePrice: p2.sl, closedAt: new Date().toLocaleTimeString("pt-PT"), closedTs: Date.now(), pnl });
             setBal(b => { const n = +(b + p2.amount + pnl).toFixed(2); balRefCur.current = n; return n; });
             toast(`${wasTrail ? "🔒 Trailing" : "🛑 SL"} ${a.sym} — ${sign(pnl)}${eur(pnl)}`, pnl >= 0 ? "success" : "warn");
           } else if (a.price >= p2.tp) {
             const pnl = (p2.tp - p2.entryPrice) * p2.units;
-            toClose.push({ ...p2, status: "TP", closePrice: p2.tp, closedAt: new Date().toLocaleTimeString("pt-PT"), pnl });
+            toClose.push({ ...p2, status: "TP", closePrice: p2.tp, closedAt: new Date().toLocaleTimeString("pt-PT"), closedTs: Date.now(), pnl });
             setBal(b => { const n = +(b + p2.amount + pnl).toFixed(2); balRefCur.current = n; return n; });
             toast(`✅ TP ${a.sym} +${eur(pnl)}`, "success");
           } else {
@@ -1690,7 +1690,7 @@ JSON: {"signals":[{"id":"btc","sinal":"COMPRAR|VENDER|AGUARDAR","razao":"1 frase
     }
     const price = a?.price || pos.entryPrice;
     const pnl   = (price - pos.entryPrice) * pos.units;
-    const closedTrade = { ...pos, status: "MANUAL", closePrice: price, closedAt: new Date().toLocaleTimeString("pt-PT"), pnl };
+    const closedTrade = { ...pos, status: "MANUAL", closePrice: price, closedAt: new Date().toLocaleTimeString("pt-PT"), closedTs: Date.now(), pnl };
     if (isSim) {
       setSimClosed(p => [closedTrade, ...p]);
       setSimPositions(p => { const next = p.filter(x => x.id !== posId); simPosRef.current = next; return next; });
@@ -1786,7 +1786,7 @@ JSON: {"signals":[{"id":"btc","sinal":"COMPRAR|VENDER|AGUARDAR","razao":"1 frase
         : positions.find(p => p.assetId === assetId);
       if (openPos) {
         const pnl = (price - openPos.entryPrice) * openPos.units;
-        const closedTrade = { ...openPos, status: "MANUAL", closePrice: price, closedAt: new Date().toLocaleTimeString("pt-PT"), pnl };
+        const closedTrade = { ...openPos, status: "MANUAL", closePrice: price, closedAt: new Date().toLocaleTimeString("pt-PT"), closedTs: Date.now(), pnl };
         if (isSim) {
           setSimClosed(p => [closedTrade, ...p]);
           setSimPositions(p => p.filter(x => x.id !== openPos.id));
@@ -2955,10 +2955,10 @@ JSON: {"signals":[{"id":"btc","sinal":"COMPRAR|VENDER|AGUARDAR","razao":"1 frase
         ) : (
           <Glass style={{ padding: "20px", overflowX: "auto" }}>
             <SectionLabel>Trades — {histTab === "sim" ? "Simulação" : "Live"} · {histCat} ({filtered.length})</SectionLabel>
-            <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 11, minWidth: 1040 }}>
+            <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 11, minWidth: 1320 }}>
               <thead>
                 <tr style={{ borderBottom: `1px solid ${T.border}` }}>
-                  {["Ativo","Cat.","Estratégia","Abertura","Entrada","Preço Atual","Investido","SL","TP","P&L","%","IA","Hold","Status","Mercado"].map(h => (
+                  {["Ativo","Cat.","Estratégia","Origem","Abertura","Saída","Duração","Entrada","Preço Atual","Investido","SL","TP","P&L","%","IA","Hold","Status","Mercado"].map(h => (
                     <th key={h} style={{ padding: "8px 10px", textAlign: "left", color: T.muted, fontSize: 8, letterSpacing: "0.1em", textTransform: "uppercase", fontWeight: 600 }}>{h}</th>
                   ))}
                 </tr>
@@ -2973,7 +2973,24 @@ JSON: {"signals":[{"id":"btc","sinal":"COMPRAR|VENDER|AGUARDAR","razao":"1 frase
                       <td style={{ padding: "9px 10px", fontWeight: 700 }}>{a?.icon || "◆"} {a?.sym || t.assetSym || t.assetId}</td>
                       <td style={{ padding: "9px 10px", color: T.muted }}>{a?.cat || "—"}</td>
                       <td style={{ padding: "9px 10px", color: T.muted, maxWidth: 110, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{t.strategy}</td>
+                      <td style={{ padding: "9px 10px" }}>
+                        <span style={{ fontSize: 10, color: T.aLight, fontWeight: 600, whiteSpace: "nowrap" }}>
+                          {t.stratId === "manual"     ? "✋ Manual"
+                            : t.stratId === "ai-brain"   ? "🤖 AI Brain"
+                            : t.stratId === "daytrading" ? "⚡ Day Trading"
+                            : "🎯 Estratégia"}
+                        </span>
+                      </td>
                       <td style={{ padding: "9px 10px", color: T.muted }}>{t.openedAt}</td>
+                      <td style={{ padding: "9px 10px", color: T.muted }}>{isOpen ? "—" : (t.closedAt || "—")}</td>
+                      <td style={{ padding: "9px 10px", color: T.muted, whiteSpace: "nowrap" }}>
+                        {isOpen || !t.openedTs || !t.closedTs ? "—" : (() => {
+                          const m = Math.round((t.closedTs - t.openedTs) / 60000);
+                          if (m < 1)  return "<1min";
+                          if (m < 60) return `${m}min`;
+                          return `${Math.floor(m / 60)}h${String(m % 60).padStart(2, "0")}`;
+                        })()}
+                      </td>
                       <td style={{ padding: "9px 10px" }}>${t.entryPrice?.toFixed(2)}</td>
                       <td style={{ padding: "9px 10px" }}>{isOpen ? `$${t.livePrice ? fmt(t.livePrice, a?.id || t.assetId) : "—"}` : `$${(+t.closePrice).toFixed(2)}`}</td>
                       <td style={{ padding: "9px 10px" }}>€{t.amount}</td>
@@ -3994,11 +4011,11 @@ JSON puro:
         // Fechar na posições
         if (simMode) {
           setSimPositions(prev => prev.filter(x => x.id !== tradeId));
-          setSimClosed(prev => [{ ...t, status: "MANUAL", closePrice: price, pnl, closedAt: new Date().toLocaleTimeString("pt-PT") }, ...prev]);
+          setSimClosed(prev => [{ ...t, status: "MANUAL", closePrice: price, pnl, closedAt: new Date().toLocaleTimeString("pt-PT"), closedTs: Date.now() }, ...prev]);
           setSimBalance(b => { const n = +(b + t.amount + pnl).toFixed(2); simBalRef.current = n; return n; });
         } else {
           setPositions(prev => prev.filter(x => x.id !== tradeId));
-          setClosed(prev => [{ ...t, status: "MANUAL", closePrice: price, pnl }, ...prev]);
+          setClosed(prev => [{ ...t, status: "MANUAL", closePrice: price, pnl, closedAt: new Date().toLocaleTimeString("pt-PT"), closedTs: Date.now() }, ...prev]);
           setBalance(b => { const n = +(b + t.amount + pnl).toFixed(2); balRef.current = n; return n; });
         }
         toast(`${pnl>=0?"✅":"🛑"} DayTrade fechado: ${sign(pnl)}€${Math.abs(pnl).toFixed(2)}`, pnl>=0?"success":"warn");
@@ -4202,7 +4219,7 @@ JSON puro:
                           id: uid(), assetId:a?.id||op.id, assetName:a?.name||op.nome, assetSym:a?.sym||op.id,
                           action:"COMPRAR", entryPrice:price2, units:units2, amount:dtAmount,
                           sl:sl2, tp:tp2, strategy:`DayTrade`,
-                          openedAt:new Date().toLocaleTimeString("pt-PT"), status:"ABERTA",
+                          openedAt:new Date().toLocaleTimeString("pt-PT"), openedTs: Date.now(), status:"ABERTA",
                           mode: simMode ? "sim" : "live",
                         };
                         setDtTrades(p => [trade, ...p]);
