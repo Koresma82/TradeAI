@@ -310,7 +310,9 @@ export default function TradeAI() {
   const simPosRef   = useRef([]);
   const simStartedRef = useRef(false); // true quando a simulação está em curso
 
-  const [tab, setTab]             = useState("dashboard");
+  const [tab, setTab]             = useState(typeof window !== "undefined" && window.innerWidth < 820 ? "resumo" : "dashboard");
+  // Resumo é um separador só-mobile: num ecrã grande, cai no Dashboard.
+  useEffect(() => { if (!isMobile && tab === "resumo") setTab("dashboard"); }, [isMobile, tab]);
   const tabRef = useRef("dashboard");
   const [balance, setBalance]     = useState(INIT_BAL);
   const [assets, setAssets]       = useState(() =>
@@ -4528,9 +4530,187 @@ JSON puro:
     );
   };
 
+  // ─────────────────────────────────────────────
+  // RENDER: RESUMO MÓVEL (entrada por defeito em telemóvel)
+  // Vista de consulta rápida em cartões: como vão as coisas, se o bot está
+  // vivo, e atalho para uma compra manual rápida.
+  // ─────────────────────────────────────────────
+  const MobileResumo = () => {
+    const capitalInicialDisplay = simMode ? (settings.capitalTotal || simCapital) : (liveSettings.capitalTotal || 1000);
+    const ganhoHoje = totalPnl; // não realizado + realizado da sessão ativa
+    const aGanhar   = ganhoHoje >= 0;
+    const corPnl    = aGanhar ? T.green : T.red;
+
+    // Posições ordenadas pelo maior movimento (|P&L|), até 4.
+    const posOrdenadas = [...activePositions]
+      .map(p => {
+        const live = mktData[p.assetId] || {};
+        const price = live.price || p.entryPrice;
+        const pnl   = (price - p.entryPrice) * p.units;
+        return { ...p, _price: price, _pnl: pnl };
+      })
+      .sort((a, b) => Math.abs(b._pnl) - Math.abs(a._pnl))
+      .slice(0, 4);
+
+    // "Bons negócios": ativos negociáveis com maior subida hoje, até 4.
+    const oportunidades = [...assets]
+      .filter(a => isTradeable(a.id))
+      .sort((a, b) => b.change - a.change)
+      .slice(0, 4);
+
+    return (
+      <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
+
+        {/* ── Cartão de estado principal ── */}
+        <Glass glow style={{ padding: "22px 22px 20px", textAlign: "center" }}>
+          <div style={{ fontSize: 11, color: T.muted, letterSpacing: "0.1em", textTransform: "uppercase", marginBottom: 6 }}>
+            {aGanhar ? "Estás a ganhar" : "Estás a perder"}
+          </div>
+          <div style={{ fontSize: 40, fontWeight: 800, color: corPnl, lineHeight: 1.1, letterSpacing: "-0.02em" }}>
+            {sign(ganhoHoje)}{eur(ganhoHoje)}
+          </div>
+          <div style={{ fontSize: 12, color: T.muted, marginTop: 6 }}>
+            Carteira: <b style={{ color: T.text }}>€{portfolioV.toFixed(2)}</b>
+            {capitalInicialDisplay > 0 && (
+              <span style={{ color: corPnl, fontWeight: 700 }}>
+                {" "}· {sign(ganhoHoje)}{((ganhoHoje / capitalInicialDisplay) * 100).toFixed(1)}%
+              </span>
+            )}
+          </div>
+
+          {/* Estado do bot */}
+          <div style={{
+            marginTop: 16, display: "inline-flex", alignItems: "center", gap: 8,
+            background: botAtivo ? `${T.green}14` : `${T.red}12`,
+            border: `1px solid ${botAtivo ? T.green : T.red}40`,
+            borderRadius: 99, padding: "7px 16px",
+          }}>
+            <span style={{
+              width: 9, height: 9, borderRadius: "50%",
+              background: botAtivo ? T.green : T.red,
+              boxShadow: `0 0 8px ${botAtivo ? T.green : T.red}`,
+            }} />
+            <span style={{ fontSize: 12, fontWeight: 700, color: botAtivo ? T.green : T.red }}>
+              {botAtivo
+                ? `Bot ativo${botStatus?.mode ? ` · ${botStatus.mode === "sim" ? "Simulação" : "LIVE"}` : ""}`
+                : "Bot offline"}
+            </span>
+          </div>
+          {botAtivo && botStatus?.lastSeen && (
+            <div style={{ fontSize: 9, color: T.muted, marginTop: 6 }}>
+              visto {Math.round((Date.now() - botStatus.lastSeen) / 1000)}s atrás
+            </div>
+          )}
+          {!botAtivo && (
+            <div style={{ fontSize: 10, color: T.muted, marginTop: 8, lineHeight: 1.5 }}>
+              O bot não está a responder. Toca em <b style={{ color: T.aLight }} onClick={() => setTab("dashboard")}>Dashboard</b> para detalhes.
+            </div>
+          )}
+        </Glass>
+
+        {/* ── KPIs rápidos (2x2) ── */}
+        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
+          <Glass style={{ padding: "14px 16px" }}>
+            <div style={{ fontSize: 9, color: T.muted, letterSpacing: "0.1em", textTransform: "uppercase", marginBottom: 4 }}>Disponível</div>
+            <div style={{ fontSize: 18, fontWeight: 700 }}>€{activeBalance.toFixed(2)}</div>
+          </Glass>
+          <Glass style={{ padding: "14px 16px" }}>
+            <div style={{ fontSize: 9, color: T.muted, letterSpacing: "0.1em", textTransform: "uppercase", marginBottom: 4 }}>Investido</div>
+            <div style={{ fontSize: 18, fontWeight: 700 }}>€{invested.toFixed(2)}</div>
+          </Glass>
+          <Glass style={{ padding: "14px 16px" }}>
+            <div style={{ fontSize: 9, color: T.muted, letterSpacing: "0.1em", textTransform: "uppercase", marginBottom: 4 }}>P&L Aberto</div>
+            <div style={{ fontSize: 18, fontWeight: 700, color: unrealized >= 0 ? T.green : T.red }}>{sign(unrealized)}{eur(unrealized)}</div>
+          </Glass>
+          <Glass style={{ padding: "14px 16px" }}>
+            <div style={{ fontSize: 9, color: T.muted, letterSpacing: "0.1em", textTransform: "uppercase", marginBottom: 4 }}>Posições</div>
+            <div style={{ fontSize: 18, fontWeight: 700 }}>{activePositions.length}</div>
+          </Glass>
+        </div>
+
+        {/* ── As tuas posições ── */}
+        {posOrdenadas.length > 0 && (
+          <div>
+            <SectionLabel>As tuas posições</SectionLabel>
+            <div style={{ display: "flex", flexDirection: "column", gap: 8, marginTop: 8 }}>
+              {posOrdenadas.map(p => {
+                const a = assets.find(x => x.id === p.assetId);
+                const pnlPct = p.entryPrice > 0 ? ((p._price - p.entryPrice) / p.entryPrice) * 100 : 0;
+                const c = p._pnl >= 0 ? T.green : T.red;
+                return (
+                  <Glass key={p.id} style={{ padding: "13px 16px" }} onClick={() => setTab("portfolio")}>
+                    <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+                      <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+                        <span style={{ fontSize: 20 }}>{a?.icon || "•"}</span>
+                        <div>
+                          <div style={{ fontWeight: 700, fontSize: 13 }}>{a?.name || p.assetSym || p.assetId}</div>
+                          <div style={{ fontSize: 10, color: T.muted }}>€{(p.amount || 0).toFixed(2)} · entrada ${fmt(p.entryPrice, p.assetId)}</div>
+                        </div>
+                      </div>
+                      <div style={{ textAlign: "right" }}>
+                        <div style={{ fontWeight: 800, fontSize: 14, color: c }}>{sign(p._pnl)}{eur(p._pnl)}</div>
+                        <div style={{ fontSize: 11, color: c, fontWeight: 700 }}>{sign(pnlPct)}{Math.abs(pnlPct).toFixed(2)}%</div>
+                      </div>
+                    </div>
+                  </Glass>
+                );
+              })}
+            </div>
+            {activePositions.length > posOrdenadas.length && (
+              <div onClick={() => setTab("portfolio")} style={{ textAlign: "center", fontSize: 11, color: T.aLight, marginTop: 8, cursor: "pointer" }}>
+                Ver todas as {activePositions.length} posições →
+              </div>
+            )}
+          </div>
+        )}
+
+        {/* ── Bons negócios agora (compra rápida) ── */}
+        <div>
+          <SectionLabel>Bons negócios agora</SectionLabel>
+          <div style={{ display: "flex", flexDirection: "column", gap: 8, marginTop: 8 }}>
+            {oportunidades.map(a => {
+              const live = mktData[a.id] || {};
+              const price = live.price || a.price;
+              const chg = (typeof live.change === "number" ? live.change : a.change) || 0;
+              return (
+                <Glass key={a.id} style={{ padding: "12px 14px" }}>
+                  <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10 }}>
+                    <div style={{ display: "flex", alignItems: "center", gap: 10, minWidth: 0 }}>
+                      <span style={{ fontSize: 19 }}>{a.icon}</span>
+                      <div style={{ minWidth: 0 }}>
+                        <div style={{ fontWeight: 700, fontSize: 13, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{a.name}</div>
+                        <div style={{ fontSize: 10, color: T.muted }}>
+                          ${fmt(price, a.id)} · <span style={{ color: chg >= 0 ? T.green : T.red, fontWeight: 700 }}>{pctFmt(chg)}</span>
+                        </div>
+                      </div>
+                    </div>
+                    <Btn color={T.green} solid sm
+                      onClick={() => {
+                        setOrderModal({ assetId: a.id, side: "BUY" });
+                        setOrderAmount(calcTradeAmount());
+                        setTab("markets");
+                      }}
+                      style={{ flexShrink: 0, fontSize: 12, padding: "8px 16px" }}>
+                      ▲ Comprar
+                    </Btn>
+                  </div>
+                </Glass>
+              );
+            })}
+          </div>
+          <div onClick={() => setTab("markets")} style={{ textAlign: "center", fontSize: 11, color: T.aLight, marginTop: 8, cursor: "pointer" }}>
+            Ver todos os mercados →
+          </div>
+        </div>
+
+      </div>
+    );
+  };
+
   // NAV + LAYOUT
   // ─────────────────────────────────────────────
   const NAV = [
+    { id: "resumo",     icon: "⚡", label: "Resumo", mobileOnly: true },
     { id: "dashboard",  icon: "◈",  label: "Dashboard"     },
     { id: "portfolio",  icon: "💼",  label: "Carteira"      },
     { id: "markets",    icon: "◎",  label: "Mercados"       },
@@ -4835,7 +5015,7 @@ JSON puro:
           height: "calc(100vh - 56px)", position: "sticky", top: 56,
           display: "flex", flexDirection: "column", padding: "10px 0",
         }}>
-          {NAV.map(item => (
+          {NAV.filter(item => !item.mobileOnly).map(item => (
             <div key={item.id} onClick={() => setTab(item.id)} style={{
               display: "flex", alignItems: "center", gap: 12,
               padding: "11px 18px", cursor: "pointer", fontSize: 12, fontWeight: 600,
@@ -4872,6 +5052,7 @@ JSON puro:
         {/* MAIN */}
         <main className="resp-main" style={{ flex: 1, padding: "22px", paddingBottom: simMode ? 90 : 22, overflowY: "auto", maxHeight: isMobile ? "none" : "calc(100vh - 56px)" }}>
           <div style={{ animation: "fadeIn 0.25s ease" }} key={tab}>
+            {tab === "resumo"     && MobileResumo()}
             {tab === "dashboard"  && Dashboard()}
             {tab === "portfolio"  && Portfolio()}
             {tab === "markets"    && <Markets />}
