@@ -378,6 +378,7 @@ export default function TradeAI() {
   const posRef    = useRef([]);
   const closedRef = useRef([]);
   const assRef    = useRef(assets);
+  const mktDataRef = useRef({}); // preços reais do feed (market.js) — fonte de verdade quando existem
   const highs     = useRef({});
   const cds       = useRef({});
   const settingsRef = useRef(settings);
@@ -461,6 +462,7 @@ export default function TradeAI() {
   useEffect(() => { posRef.current = positions; }, [positions]);
   useEffect(() => { closedRef.current = closed; }, [closed]);
   useEffect(() => { assRef.current = assets; }, [assets]);
+  useEffect(() => { mktDataRef.current = mktData; }, [mktData]);
 
   // ── Toast ──
   const toast = useCallback((msg, type = "info") => {
@@ -501,13 +503,24 @@ export default function TradeAI() {
         if (hoveredChart.current) return prev; // ⏸ pausa quando hover num gráfico
         if (tabRef.current === "settings") return prev; // ⏸ pausa nas Definições (evita perder foco)
         const upd = assRef.current.map(a => {
-          // Se o bot 24/7 está a operar (SIM), não geramos ruído — os preços reais
-          // chegam via fetchMarkets (market.js). Mantemos o preço atual.
+          // FONTE DE VERDADE: se este ativo tem preço real do feed (market.js),
+          // nunca geramos ruído por cima — manteríamos dois motores em conflito
+          // (foi o que causava o P&L fantasma do ouro: entrada ao preço real
+          // ~$4293 vs preço simulado preso no base ~$2341).
+          const realPrice = mktDataRef.current?.[a.id]?.price;
+          if (typeof realPrice === "number" && realPrice > 0) {
+            const h0 = highs.current[a.id];
+            if (!h0 || realPrice > h0.p || t - h0.t > 120) highs.current[a.id] = { p: realPrice, t };
+            return { ...a, price: realPrice, hist: [...a.hist.slice(-79), { i: t, v: realPrice }] };
+          }
+          // Se o bot 24/7 está a operar (SIM), também não geramos ruído —
+          // os preços reais chegam via fetchMarkets. Mantemos o preço atual.
           if (simModeRef.current && botActiveRef.current) {
             const h0 = highs.current[a.id];
             if (!h0 || a.price > h0.p || t - h0.t > 120) highs.current[a.id] = { p: a.price, t };
             return { ...a, hist: [...a.hist.slice(-79), { i: t, v: a.price }] };
           }
+          // Fallback: ativo sem feed real e sem bot — simulação por random walk.
           const noise = (Math.random() - 0.492) * a.price * a.vol * 4.5;
           const p     = +(Math.max(a.price + noise, a.price * 0.45)).toFixed(a.id === "eurusd" ? 4 : 2);
           const chg   = a.id === "btc" || a.id === "eth" ? a.change : ((p - a.base) / a.base) * 100;
@@ -929,6 +942,23 @@ JSON puro — inclui TODOS os ativos relevantes de TODAS as categorias:
     const capitalInicialDisplay = simMode ? (settings.capitalTotal || simCapital) : (liveSettings.capitalTotal || 1000);
     const activeStrats = strategies.filter(s => s.ativo);
 
+    // ── Posições órfãs ──────────────────────────────────────────────────────
+    // Uma posição é "órfã" quando a estratégia que a abriu já foi apagada.
+    // As do sistema (compra manual, day trading, cérebro AI) NÃO são órfãs —
+    // são geridas pelo bot na mesma. O bot continua a geri-las (SL/TP/lucro);
+    // este cartão serve só para veres quanto dinheiro está preso nelas.
+    const SYSTEM_STRATS = new Set(["manual", "daytrading", "ai-brain"]);
+    const stratIds = new Set(strategies.map(s => s.id));
+    const orfas = activePositions.filter(p =>
+      p.stratId && !SYSTEM_STRATS.has(p.stratId) && !stratIds.has(p.stratId)
+    );
+    const orfasInvestido = orfas.reduce((s, p) => s + (p.amount || 0), 0);
+    const orfasPnl = orfas.reduce((s, p) => {
+      const a = assets.find(x => x.id === p.assetId);
+      const price = a?.price || p.entryPrice;
+      return s + (price - p.entryPrice) * p.units;
+    }, 0);
+
     return (
       <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
         {/* Estado do bot 24/7 */}
@@ -1022,6 +1052,49 @@ JSON puro — inclui TODOS os ativos relevantes de TODAS as categorias:
             </div>
           );
         })()}
+        {/* Posições órfãs (estratégia apagada) */}
+        {orfas.length > 0 && (
+          <Glass style={{ padding: "16px 20px", background: `${T.gold}0c`, border: `1px solid ${T.gold}33` }}>
+            <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12, flexWrap: "wrap" }}>
+              <div style={{ display: "flex", alignItems: "flex-start", gap: 10, minWidth: 0 }}>
+                <span style={{ fontSize: 18, marginTop: 1 }}>🔗</span>
+                <div>
+                  <div style={{ fontSize: 13, fontWeight: 700, color: T.gold }}>
+                    {orfas.length} posição(ões) órfã(s) · €{orfasInvestido.toFixed(2)} investido
+                  </div>
+                  <div style={{ fontSize: 10, color: T.muted, marginTop: 3, lineHeight: 1.5 }}>
+                    A estratégia que as abriu foi apagada. O bot continua a geri-las normalmente (Stop-Loss, Take-Profit e saída por lucro) — só já não estão ligadas a nenhuma estratégia.
+                  </div>
+                </div>
+              </div>
+              <div style={{ textAlign: "right", flexShrink: 0 }}>
+                <div style={{ fontSize: 9, color: T.muted, textTransform: "uppercase", letterSpacing: "0.08em" }}>P&L atual</div>
+                <div style={{ fontSize: 16, fontWeight: 800, color: orfasPnl >= 0 ? T.green : T.red }}>
+                  {sign(orfasPnl)}{eur(orfasPnl)}
+                </div>
+              </div>
+            </div>
+            <div style={{ display: "flex", flexWrap: "wrap", gap: 6, marginTop: 12 }}>
+              {orfas.map(p => {
+                const a = assets.find(x => x.id === p.assetId);
+                const price = a?.price || p.entryPrice;
+                const pnl = (price - p.entryPrice) * p.units;
+                return (
+                  <div key={p.id} onClick={() => setTab("portfolio")} style={{
+                    display: "flex", alignItems: "center", gap: 6, cursor: "pointer",
+                    background: "rgba(255,255,255,0.04)", border: `1px solid ${T.border}`,
+                    borderRadius: 8, padding: "5px 10px", fontSize: 11,
+                  }}>
+                    <span>{a?.icon || "•"}</span>
+                    <span style={{ fontWeight: 600 }}>{a?.sym || p.assetSym || p.assetId}</span>
+                    <span style={{ color: T.muted }}>€{(p.amount || 0).toFixed(0)}</span>
+                    <span style={{ color: pnl >= 0 ? T.green : T.red, fontWeight: 700 }}>{sign(pnl)}{eur(pnl)}</span>
+                  </div>
+                );
+              })}
+            </div>
+          </Glass>
+        )}
         {/* Hero */}
         <Glass style={{
           padding: "28px 32px",
