@@ -462,7 +462,6 @@ export default function TradeAI() {
   useEffect(() => { posRef.current = positions; }, [positions]);
   useEffect(() => { closedRef.current = closed; }, [closed]);
   useEffect(() => { assRef.current = assets; }, [assets]);
-  useEffect(() => { mktDataRef.current = mktData; }, [mktData]);
 
   // ── Toast ──
   const toast = useCallback((msg, type = "info") => {
@@ -1818,6 +1817,7 @@ JSON puro:
   // ─────────────────────────────────────────────
 
   const [mktData,    setMktData]    = useState({});   // { id: { price, change, high24h, low24h, volume, sparkline } }
+  useEffect(() => { mktDataRef.current = mktData; }, [mktData]); // sync ref (declarado depois de mktData para evitar TDZ)
   const [mktLoading, setMktLoading] = useState(true);
   const [mktError,   setMktError]   = useState(null);
   const [mktLastAt,  setMktLastAt]  = useState(null);
