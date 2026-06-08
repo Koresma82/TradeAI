@@ -941,22 +941,40 @@ JSON puro — inclui TODOS os ativos relevantes de TODAS as categorias:
     const capitalInicialDisplay = simMode ? (settings.capitalTotal || simCapital) : (liveSettings.capitalTotal || 1000);
     const activeStrats = strategies.filter(s => s.ativo);
 
-    // ── Posições órfãs ──────────────────────────────────────────────────────
-    // Uma posição é "órfã" quando a estratégia que a abriu já foi apagada.
-    // As do sistema (compra manual, day trading, cérebro AI) NÃO são órfãs —
-    // são geridas pelo bot na mesma. O bot continua a geri-las (SL/TP/lucro);
-    // este cartão serve só para veres quanto dinheiro está preso nelas.
-    const SYSTEM_STRATS = new Set(["manual", "daytrading", "ai-brain"]);
+    // ── Posições agrupadas por origem ────────────────────────────────────────
+    // Vista de "onde está o meu dinheiro": cada posição aberta é classificada
+    // pela sua origem. As órfãs (estratégia apagada) são destacadas porque são
+    // o caso que pode passar despercebido — mas o bot gere todas na mesma.
     const stratIds = new Set(strategies.map(s => s.id));
-    const orfas = activePositions.filter(p =>
-      p.stratId && !SYSTEM_STRATS.has(p.stratId) && !stratIds.has(p.stratId)
-    );
-    const orfasInvestido = orfas.reduce((s, p) => s + (p.amount || 0), 0);
-    const orfasPnl = orfas.reduce((s, p) => {
+    const stratNomes = new Map(strategies.map(s => [s.id, s.nome]));
+    const origemDe = (p) => {
+      if (p.stratId === "daytrading") return { key: "daytrade", label: "Day Trading", icon: "⚡", cor: T.gold };
+      if (p.stratId === "manual")     return { key: "manual",   label: "Compras manuais", icon: "✋", cor: T.accent };
+      if (p.stratId === "ai-brain")   return { key: "aibrain",  label: "Cérebro AI", icon: "🤖", cor: T.aLight };
+      if (p.stratId && stratIds.has(p.stratId)) return { key: "estrategia", label: "Estratégias", icon: "📊", cor: T.green };
+      return { key: "orfa", label: "Órfãs (estratégia apagada)", icon: "🔗", cor: T.gold }; // sem stratId ou estratégia inexistente
+    };
+    const pnlDe = (p) => {
       const a = assets.find(x => x.id === p.assetId);
       const price = a?.price || p.entryPrice;
-      return s + (price - p.entryPrice) * p.units;
-    }, 0);
+      return (price - p.entryPrice) * p.units;
+    };
+    const grupos = {};
+    activePositions.forEach(p => {
+      const o = origemDe(p);
+      if (!grupos[o.key]) grupos[o.key] = { ...o, n: 0, investido: 0, pnl: 0, posicoes: [] };
+      grupos[o.key].n += 1;
+      grupos[o.key].investido += (p.amount || 0);
+      grupos[o.key].pnl += pnlDe(p);
+      grupos[o.key].posicoes.push(p);
+    });
+    // Ordem de apresentação: órfãs primeiro (atenção), depois o resto por valor.
+    const ordemGrupos = Object.values(grupos).sort((a, b) => {
+      if (a.key === "orfa") return -1;
+      if (b.key === "orfa") return 1;
+      return b.investido - a.investido;
+    });
+    const orfas = grupos.orfa?.posicoes || [];
 
     return (
       <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
@@ -1051,47 +1069,42 @@ JSON puro — inclui TODOS os ativos relevantes de TODAS as categorias:
             </div>
           );
         })()}
-        {/* Posições órfãs (estratégia apagada) */}
-        {orfas.length > 0 && (
-          <Glass style={{ padding: "16px 20px", background: `${T.gold}0c`, border: `1px solid ${T.gold}33` }}>
-            <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12, flexWrap: "wrap" }}>
-              <div style={{ display: "flex", alignItems: "flex-start", gap: 10, minWidth: 0 }}>
-                <span style={{ fontSize: 18, marginTop: 1 }}>🔗</span>
-                <div>
-                  <div style={{ fontSize: 13, fontWeight: 700, color: T.gold }}>
-                    {orfas.length} posição(ões) órfã(s) · €{orfasInvestido.toFixed(2)} investido
-                  </div>
-                  <div style={{ fontSize: 10, color: T.muted, marginTop: 3, lineHeight: 1.5 }}>
-                    A estratégia que as abriu foi apagada. O bot continua a geri-las normalmente (Stop-Loss, Take-Profit e saída por lucro) — só já não estão ligadas a nenhuma estratégia.
-                  </div>
-                </div>
-              </div>
-              <div style={{ textAlign: "right", flexShrink: 0 }}>
-                <div style={{ fontSize: 9, color: T.muted, textTransform: "uppercase", letterSpacing: "0.08em" }}>P&L atual</div>
-                <div style={{ fontSize: 16, fontWeight: 800, color: orfasPnl >= 0 ? T.green : T.red }}>
-                  {sign(orfasPnl)}{eur(orfasPnl)}
-                </div>
-              </div>
+        {/* Posições por origem — onde está o teu dinheiro */}
+        {activePositions.length > 0 && (
+          <Glass style={{ padding: "16px 20px" }}>
+            <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 12 }}>
+              <SectionLabel>Posições por origem</SectionLabel>
+              <span style={{ fontSize: 10, color: T.muted }}>{activePositions.length} aberta(s) · geridas pelo bot</span>
             </div>
-            <div style={{ display: "flex", flexWrap: "wrap", gap: 6, marginTop: 12 }}>
-              {orfas.map(p => {
-                const a = assets.find(x => x.id === p.assetId);
-                const price = a?.price || p.entryPrice;
-                const pnl = (price - p.entryPrice) * p.units;
+            <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(190px,1fr))", gap: 10 }}>
+              {ordemGrupos.map(g => {
+                const ehOrfa = g.key === "orfa";
                 return (
-                  <div key={p.id} onClick={() => setTab("portfolio")} style={{
-                    display: "flex", alignItems: "center", gap: 6, cursor: "pointer",
-                    background: "rgba(255,255,255,0.04)", border: `1px solid ${T.border}`,
-                    borderRadius: 8, padding: "5px 10px", fontSize: 11,
+                  <div key={g.key} onClick={() => setTab("portfolio")} style={{
+                    cursor: "pointer", borderRadius: 12, padding: "13px 15px",
+                    background: ehOrfa ? `${T.gold}0e` : "rgba(255,255,255,0.03)",
+                    border: `1px solid ${ehOrfa ? T.gold + "44" : T.border}`,
                   }}>
-                    <span>{a?.icon || "•"}</span>
-                    <span style={{ fontWeight: 600 }}>{a?.sym || p.assetSym || p.assetId}</span>
-                    <span style={{ color: T.muted }}>€{(p.amount || 0).toFixed(0)}</span>
-                    <span style={{ color: pnl >= 0 ? T.green : T.red, fontWeight: 700 }}>{sign(pnl)}{eur(pnl)}</span>
+                    <div style={{ display: "flex", alignItems: "center", gap: 7, marginBottom: 8 }}>
+                      <span style={{ fontSize: 15 }}>{g.icon}</span>
+                      <span style={{ fontSize: 11, fontWeight: 700, color: ehOrfa ? T.gold : T.text }}>{g.label}</span>
+                    </div>
+                    <div style={{ display: "flex", alignItems: "baseline", justifyContent: "space-between" }}>
+                      <span style={{ fontSize: 18, fontWeight: 800 }}>€{g.investido.toFixed(2)}</span>
+                      <span style={{ fontSize: 12, fontWeight: 700, color: g.pnl >= 0 ? T.green : T.red }}>
+                        {sign(g.pnl)}{eur(g.pnl)}
+                      </span>
+                    </div>
+                    <div style={{ fontSize: 9, color: T.muted, marginTop: 3 }}>{g.n} posição(ões)</div>
                   </div>
                 );
               })}
             </div>
+            {orfas.length > 0 && (
+              <div style={{ fontSize: 10, color: T.muted, marginTop: 11, lineHeight: 1.5, paddingTop: 10, borderTop: `1px solid ${T.border}` }}>
+                🔗 As <b style={{ color: T.gold }}>órfãs</b> são posições cuja estratégia foi apagada. O bot continua a geri-las normalmente (Stop-Loss, Take-Profit e saída por lucro) — só já não estão ligadas a nenhuma estratégia.
+              </div>
+            )}
           </Glass>
         )}
         {/* Hero */}
