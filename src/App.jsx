@@ -340,6 +340,7 @@ export default function TradeAI() {
   const [toasts, setToasts]         = useState([]);
   const [confirmModal, setConfirmModal] = useState(null); // { title, message, lines, danger, confirmLabel, onConfirm }
   const [suggestCats, setSuggestCats] = useState([]); // categorias selecionadas ([] = todas)
+  const [editAmounts, setEditAmounts] = useState({}); // { [opId]: valor € a investir por sugestão }
   const [tick, setTick]             = useState(0);
   const [liveData, setLiveData]     = useState(false);
   // Estado do bot 24/7 (Railway). Quando vivo, a app não opera — só mostra.
@@ -567,7 +568,7 @@ export default function TradeAI() {
           const sg = sigs[pos.assetId];
           if (exitOnFlip && sg && sg.sinal === "VENDER" && (sg.confianca || 0) >= flipConf && a.price > p2.sl) {
             const pnl = (a.price - p2.entryPrice) * p2.units;
-            toClose.push({ ...p2, status: "AI-EXIT", closePrice: a.price, closedAt: new Date().toLocaleTimeString("pt-PT"), closedTs: Date.now(), pnl });
+            toClose.push({ ...p2, status: "AI-EXIT", closePrice: a.price, closedAt: new Date().toLocaleString("pt-PT"), closedTs: Date.now(), pnl });
             setBal(b => { const n = +(b + p2.amount + pnl).toFixed(2); balRefCur.current = n; return n; });
             toast(`🤖 IA fechou ${a.sym} (sinal mudou) ${sign(pnl)}${eur(pnl)}`, pnl >= 0 ? "success" : "warn");
             return;
@@ -578,12 +579,12 @@ export default function TradeAI() {
             // Se o SL está acima da entrada, este fecho protegeu lucro → TRAIL.
             // (não depende do toggle estar ligado neste instante)
             const wasTrail = p2.sl > pos.entryPrice;
-            toClose.push({ ...p2, status: wasTrail ? "TRAIL" : "SL", closePrice: p2.sl, closedAt: new Date().toLocaleTimeString("pt-PT"), closedTs: Date.now(), pnl });
+            toClose.push({ ...p2, status: wasTrail ? "TRAIL" : "SL", closePrice: p2.sl, closedAt: new Date().toLocaleString("pt-PT"), closedTs: Date.now(), pnl });
             setBal(b => { const n = +(b + p2.amount + pnl).toFixed(2); balRefCur.current = n; return n; });
             toast(`${wasTrail ? "📈 Trailing" : "🛑 SL"} ${a.sym} — ${sign(pnl)}${eur(pnl)}`, pnl >= 0 ? "success" : "warn");
           } else if (a.price >= p2.tp) {
             const pnl = (p2.tp - p2.entryPrice) * p2.units;
-            toClose.push({ ...p2, status: "TP", closePrice: p2.tp, closedAt: new Date().toLocaleTimeString("pt-PT"), closedTs: Date.now(), pnl });
+            toClose.push({ ...p2, status: "TP", closePrice: p2.tp, closedAt: new Date().toLocaleString("pt-PT"), closedTs: Date.now(), pnl });
             setBal(b => { const n = +(b + p2.amount + pnl).toFixed(2); balRefCur.current = n; return n; });
             toast(`✅ TP ${a.sym} +${eur(pnl)}`, "success");
           } else {
@@ -654,7 +655,7 @@ export default function TradeAI() {
                   id: uid(), assetId: a.id, assetName: a.name, assetSym: a.sym,
                   entryPrice: a.price, units, amount: s.perTrade, peak: a.price,
                   strategy: s.nome, stratId: s.id, sl, tp,
-                  openedAt: new Date().toLocaleTimeString("pt-PT"), openedTs: Date.now(), status: "ABERTA",
+                  openedAt: new Date().toLocaleString("pt-PT"), openedTs: Date.now(), status: "ABERTA",
                   mode: isSim ? "sim" : "live",
                 };
                 setPos(p => { const next = [...p, pos]; if (isSim) simPosRef.current = next; return next; });
@@ -697,7 +698,7 @@ export default function TradeAI() {
               id: uid(), assetId: a.id, assetName: a.name, assetSym: a.sym,
               entryPrice: a.price, units, amount: perTrade, peak: a.price,
               strategy: `🤖 AI Brain (${sg.confianca}%)`, stratId: "ai-brain", sl, tp,
-              openedAt: new Date().toLocaleTimeString("pt-PT"), openedTs: Date.now(), status: "ABERTA",
+              openedAt: new Date().toLocaleString("pt-PT"), openedTs: Date.now(), status: "ABERTA",
               mode: isSim ? "sim" : "live",
             };
             setPos(p => { const next = [...p, pos]; if (isSim) simPosRef.current = next; return next; });
@@ -1352,7 +1353,7 @@ JSON puro — inclui TODOS os ativos relevantes de TODAS as categorias:
   };
 
   // ── Investir numa sugestão AI directamente ─────────────────────────────────
-  const investirSugestao = (op) => {
+  const investirSugestao = (op, explicitAmount) => {
     // Validar o ativo: o id tem de existir mesmo na lista. Se a IA devolver um id
     // inválido (ex. "xag" em vez de "silver"), tenta mapear por símbolo/nome.
     let asset = ASSETS.find(a => a.id === op.id);
@@ -1372,7 +1373,9 @@ JSON puro — inclui TODOS os ativos relevantes de TODAS as categorias:
       toast(`${asset.name} ainda não está disponível para negociação pelo bot.`, "error");
       return;
     }
-    const amount = aiSuggestions?.amount || calcTradeAmount();
+    const amount = +explicitAmount > 0
+      ? +explicitAmount
+      : (suggestInvestAmount(asset.id, op.confianca) || calcTradeAmount());
     const slPct  = settingsRef.current?.stopLossPadrao    || 6;
     const tpPct  = settingsRef.current?.takeProfitPadrao  || 12;
     const s = {
@@ -1424,6 +1427,14 @@ JSON puro:
 {"resumo":"análise 1 frase pt","momento":"BOM|NEUTRO|MAU","oportunidades":[{"id":"<um dos ids válidos>","nome":"Prata","icone":"🥈","sinal":"COMPRAR|AGUARDAR","porque":"razão simples 1-2 frases pt","confianca":82,"risco":"BAIXO|MÉDIO|ALTO","entrada":30.5,"sl":28.6,"tp":34.2,"retornoEsperado":12.1,"prazo":"3-7 dias"}]}` }],
       });
       setAiSuggestions({ ...result, geradoEm: new Date().toLocaleTimeString("pt-PT"), amount });
+      // Semear o valor sugerido por linha: por perfil + confiança da IA.
+      const seeded = {};
+      (result?.oportunidades || []).forEach(op => {
+        const asset = ASSETS.find(a => a.id === op.id);
+        const aid = asset?.id || op.id;
+        seeded[op.id] = suggestInvestAmount(aid, op.confianca) || amount;
+      });
+      setEditAmounts(seeded);
       setAiCost(p => +(p + (c1||0)).toFixed(5));
       toast("✦ Oportunidades atualizadas!", "success");
     } catch (e) { toast(`Erro: ${e.message}`, "error"); }
@@ -1454,8 +1465,36 @@ JSON puro:
         </div>
         {aiSuggestions && (
           <div style={{ marginTop: 4, fontSize: 10, color: T.muted }}>
-            Atualizado às {aiSuggestions.geradoEm} · €{aiSuggestions.amount} por trade ·{" "}
+            Atualizado às {aiSuggestions.geradoEm} ·{" "}
             <span style={{ color: momentoC, fontWeight: 700 }}>Momento {aiSuggestions.momento}</span>
+          </div>
+        )}
+        {aiSuggestions && (
+          <div style={{ marginTop: 14, paddingTop: 14, borderTop: `1px solid ${T.border}` }}>
+            <div style={{ fontSize: 10, color: T.muted, marginBottom: 8 }}>Categorias a analisar (nenhuma = todas):</div>
+            <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center" }}>
+              {[
+                ["Crypto", "💰 Cripto"],
+                ["Commodity", "🥇 Metais/Petróleo"],
+                ["ETF", "📈 ETFs"],
+                ["Forex", "💱 Forex"],
+              ].map(([cat, label]) => {
+                const sel = suggestCats.includes(cat);
+                return (
+                  <button key={cat} onClick={() => setSuggestCats(prev => sel ? prev.filter(c => c !== cat) : [...prev, cat])} style={{
+                    background: sel ? `${T.accent}28` : `${T.accent}10`,
+                    border: `1px solid ${sel ? T.accent+"88" : T.accent+"25"}`,
+                    borderRadius: 99, padding: "6px 14px", fontSize: 11,
+                    color: sel ? T.aLight : T.muted, fontWeight: sel ? 700 : 500,
+                    cursor: "pointer", fontFamily: "inherit",
+                  }}>{sel ? "✓ " : ""}{label}</button>
+                );
+              })}
+              <Btn onClick={getSuggestions} disabled={suggestLoading} color={T.green} sm
+                style={{ marginLeft: "auto", fontSize: 11, padding: "7px 16px" }}>
+                {suggestLoading ? "◌ A analisar…" : `◆ Reanalisar ${suggestCats.length > 0 ? suggestCats.length + " cat." : "tudo"}`}
+              </Btn>
+            </div>
           </div>
         )}
       </Glass>
@@ -1518,10 +1557,29 @@ JSON puro:
                 {/* Botão */}
                 <div>
                   {op.sinal === "COMPRAR" ? (
-                    <Btn color={T.green} solid onClick={() => investirSugestao(op)}
-                      style={{ width: "100%", fontSize: 12, padding: "9px 0" }}>
-                      ▶ Investir €{aiSuggestions.amount}
-                    </Btn>
+                    <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+                      <div style={{ display: "flex", alignItems: "center", gap: 4,
+                        background: "rgba(255,255,255,0.04)", border: `1px solid ${T.border}`,
+                        borderRadius: 8, padding: "4px 8px" }}>
+                        <span style={{ fontSize: 12, color: T.muted }}>€</span>
+                        <input
+                          type="number" min="1" step="1"
+                          value={editAmounts[op.id] ?? ""}
+                          onChange={e => setEditAmounts(prev => ({ ...prev, [op.id]: e.target.value }))}
+                          style={{ width: "100%", background: "none", border: "none", outline: "none",
+                            color: T.text, fontSize: 13, fontWeight: 700, fontFamily: "inherit" }}
+                        />
+                      </div>
+                      <Btn color={T.green} solid
+                        onClick={() => {
+                          const val = +editAmounts[op.id];
+                          if (!val || val <= 0) { toast("Indica um valor válido a investir.", "error"); return; }
+                          investirSugestao(op, val);
+                        }}
+                        style={{ width: "100%", fontSize: 12, padding: "8px 0" }}>
+                        ▶ Investir
+                      </Btn>
+                    </div>
                   ) : (
                     <div style={{ fontSize: 11, color: T.muted, textAlign: "center", padding: "9px 0" }}>A aguardar…</div>
                   )}
@@ -1635,8 +1693,30 @@ JSON puro:
                 {s.ativo ? "⏸ Pausar" : "▶ Ativar"}
               </Btn>
               <Btn sm color={T.red} onClick={() => {
-                setStrategies(p => p.filter(x => x.id !== s.id));
-                if (user) import("./firebase.js").then(({ deleteStrategy }) => deleteStrategy(user.uid, s.id).catch(()=>{}));
+                const doDelete = () => {
+                  setStrategies(p => p.filter(x => x.id !== s.id));
+                  if (user) import("./firebase.js").then(({ deleteStrategy }) => deleteStrategy(user.uid, s.id).catch(()=>{}));
+                };
+                const abertas = activePositions.filter(p => p.stratId === s.id);
+                if (abertas.length > 0) {
+                  setConfirmModal({
+                    danger: true,
+                    icon: "🗑️",
+                    title: "Apagar estratégia com posições abertas?",
+                    message: `Esta estratégia tem ${abertas.length} posição(ões) aberta(s).`,
+                    lines: [
+                      "As posições NÃO são fechadas — continuam abertas na tua carteira.",
+                      "O bot continua a geri-las normalmente (Stop-Loss, Take-Profit e saída por lucro).",
+                      "Só deixam de aparecer associadas a esta estratégia no painel.",
+                      "Podes sempre fechá-las à mão em Carteira.",
+                    ],
+                    confirmLabel: "Apagar estratégia",
+                    cancelLabel: "Cancelar",
+                    onConfirm: doDelete,
+                  });
+                } else {
+                  doDelete();
+                }
               }}>✕</Btn>
             </div>
           </div>
@@ -1789,7 +1869,7 @@ JSON: {"signals":[{"id":"btc","sinal":"COMPRAR|VENDER|AGUARDAR","razao":"1 frase
     }
     const price = a?.price || pos.entryPrice;
     const pnl   = (price - pos.entryPrice) * pos.units;
-    const closedTrade = { ...pos, status: "MANUAL", closePrice: price, closedAt: new Date().toLocaleTimeString("pt-PT"), closedTs: Date.now(), pnl };
+    const closedTrade = { ...pos, status: "MANUAL", closePrice: price, closedAt: new Date().toLocaleString("pt-PT"), closedTs: Date.now(), pnl };
     if (isSim) {
       setSimClosed(p => [closedTrade, ...p]);
       setSimPositions(p => { const next = p.filter(x => x.id !== posId); simPosRef.current = next; return next; });
@@ -1849,7 +1929,7 @@ JSON: {"signals":[{"id":"btc","sinal":"COMPRAR|VENDER|AGUARDAR","razao":"1 frase
         id: uid(), assetId, assetName: a?.name || assetId, assetSym: a?.sym || assetId,
         entryPrice: price, units, amount, sl, tp, peak: price,
         strategy: "Manual (Mercados)", stratId: "manual",
-        openedAt: new Date().toLocaleTimeString("pt-PT"), openedTs: Date.now(), status: "ABERTA",
+        openedAt: new Date().toLocaleString("pt-PT"), openedTs: Date.now(), status: "ABERTA",
         mode: isSim ? "sim" : "live",
       };
       if (isSim) {
@@ -1885,7 +1965,7 @@ JSON: {"signals":[{"id":"btc","sinal":"COMPRAR|VENDER|AGUARDAR","razao":"1 frase
         : positions.find(p => p.assetId === assetId);
       if (openPos) {
         const pnl = (price - openPos.entryPrice) * openPos.units;
-        const closedTrade = { ...openPos, status: "MANUAL", closePrice: price, closedAt: new Date().toLocaleTimeString("pt-PT"), closedTs: Date.now(), pnl };
+        const closedTrade = { ...openPos, status: "MANUAL", closePrice: price, closedAt: new Date().toLocaleString("pt-PT"), closedTs: Date.now(), pnl };
         if (isSim) {
           setSimClosed(p => [closedTrade, ...p]);
           setSimPositions(p => p.filter(x => x.id !== openPos.id));
@@ -4079,7 +4159,7 @@ JSON puro:
                 id: uid(), assetId: a.id, assetName: a.name, assetSym: a.sym,
                 action: "COMPRAR", entryPrice: price, units, amount: dtAmount,
                 sl, tp, strategy: `DayTrade — ${op.previsao?.slice(0,40)}`,
-                openedAt: new Date().toLocaleTimeString("pt-PT"), openedTs: Date.now(), status: "ABERTA",
+                openedAt: new Date().toLocaleString("pt-PT"), openedTs: Date.now(), status: "ABERTA",
                 mode: simMode ? "sim" : "live",
               };
               setDtTrades(p => [trade, ...p]);
@@ -4133,11 +4213,11 @@ JSON puro:
         // Fechar na posições
         if (simMode) {
           setSimPositions(prev => prev.filter(x => x.id !== tradeId));
-          setSimClosed(prev => [{ ...t, status: "MANUAL", closePrice: price, pnl, closedAt: new Date().toLocaleTimeString("pt-PT"), closedTs: Date.now() }, ...prev]);
+          setSimClosed(prev => [{ ...t, status: "MANUAL", closePrice: price, pnl, closedAt: new Date().toLocaleString("pt-PT"), closedTs: Date.now() }, ...prev]);
           setSimBalance(b => { const n = +(b + t.amount + pnl).toFixed(2); simBalRef.current = n; return n; });
         } else {
           setPositions(prev => prev.filter(x => x.id !== tradeId));
-          setClosed(prev => [{ ...t, status: "MANUAL", closePrice: price, pnl, closedAt: new Date().toLocaleTimeString("pt-PT"), closedTs: Date.now() }, ...prev]);
+          setClosed(prev => [{ ...t, status: "MANUAL", closePrice: price, pnl, closedAt: new Date().toLocaleString("pt-PT"), closedTs: Date.now() }, ...prev]);
           setBalance(b => { const n = +(b + t.amount + pnl).toFixed(2); balRef.current = n; return n; });
         }
         toast(`${pnl>=0?"✅":"🛑"} DayTrade fechado: ${sign(pnl)}€${Math.abs(pnl).toFixed(2)}`, pnl>=0?"success":"warn");
@@ -4341,7 +4421,7 @@ JSON puro:
                           id: uid(), assetId:a?.id||op.id, assetName:a?.name||op.nome, assetSym:a?.sym||op.id,
                           action:"COMPRAR", entryPrice:price2, units:units2, amount:dtAmount,
                           sl:sl2, tp:tp2, strategy:`DayTrade`,
-                          openedAt:new Date().toLocaleTimeString("pt-PT"), openedTs: Date.now(), status:"ABERTA",
+                          openedAt:new Date().toLocaleString("pt-PT"), openedTs: Date.now(), status:"ABERTA",
                           mode: simMode ? "sim" : "live",
                         };
                         setDtTrades(p => [trade, ...p]);
