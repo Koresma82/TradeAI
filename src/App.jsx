@@ -304,6 +304,8 @@ export default function TradeAI() {
   const dtTimerRef = useRef(null);                            // intervalo de scan
   const [histCat, setHistCat] = useState("Todos"); // categoria filtro histórico
   const [histOrigem, setHistOrigem] = useState("Todas"); // filtro por origem (AI Brain, estratégias, etc.)
+  const [histSortKey, setHistSortKey] = useState("abertura"); // coluna de ordenação do histórico
+  const [histSortDir, setHistSortDir] = useState("desc");     // "asc" | "desc"
   const [histOpenDay, setHistOpenDay] = useState(null); // dia de arquivo expandido no histórico
   const [simStartedAt, setSimStartedAt] = useState(null); // timestamp início
   const simBalRef   = useRef(1000);
@@ -3037,6 +3039,55 @@ JSON: {"signals":[{"id":"btc","sinal":"COMPRAR|VENDER|AGUARDAR","razao":"1 frase
       return okCat && okOrig;
     });
 
+    // ── Ordenação por coluna ────────────────────────────────────────────────
+    // Cada coluna tem um extrator de valor (número ou texto). Datas usam o
+    // timestamp; campos em falta vão para o fim. Clicar no cabeçalho alterna
+    // asc/desc; clicar noutra coluna ordena por essa.
+    const parseDur = (t) => {
+      if (!t.openedTs) return null;
+      const fim = t.closedTs || Date.now();
+      return fim - t.openedTs; // ms
+    };
+    const sortVals = {
+      ativo:    t => (findAsset(t)?.sym || t.assetSym || t.assetId || "").toLowerCase(),
+      cat:      t => (findAsset(t)?.cat || "").toLowerCase(),
+      estrategia: t => (t.strategy || "").toLowerCase(),
+      origem:   t => origemDe(t),
+      abertura: t => t.openedTs || 0,
+      saida:    t => t.closedTs || 0,
+      duracao:  t => parseDur(t) ?? -1,
+      entrada:  t => t.entryPrice ?? 0,
+      preco:    t => (t.livePrice ?? t.closePrice ?? t.entryPrice ?? 0),
+      investido: t => t.amount ?? 0,
+      sl:       t => t.sl ?? 0,
+      tp:       t => t.tp ?? 0,
+      pnl:      t => (t.pnl !== undefined ? t.pnl : t.curPnl) ?? 0,
+      pct:      t => {
+        const p = (t.pnl !== undefined ? t.pnl : t.curPnl) ?? 0;
+        return t.amount ? (p / t.amount) * 100 : 0;
+      },
+      status:   t => (t.status || "").toLowerCase(),
+    };
+    const sortedFiltered = [...filtered].sort((a, b) => {
+      const fn = sortVals[histSortKey] || sortVals.abertura;
+      const va = fn(a), vb = fn(b);
+      let cmp;
+      if (typeof va === "number" && typeof vb === "number") cmp = va - vb;
+      else cmp = String(va).localeCompare(String(vb), "pt");
+      return histSortDir === "asc" ? cmp : -cmp;
+    });
+    const toggleSort = (key) => {
+      if (histSortKey === key) setHistSortDir(d => d === "asc" ? "desc" : "asc");
+      else { setHistSortKey(key); setHistSortDir(key === "abertura" || key === "saida" ? "desc" : "desc"); }
+    };
+    // Mapeia o rótulo do cabeçalho → chave de ordenação (null = não ordenável).
+    const colSortKey = {
+      "Ativo": "ativo", "Cat.": "cat", "Estratégia": "estrategia", "Origem": "origem",
+      "Abertura": "abertura", "Saída": "saida", "Duração": "duracao", "Entrada": "entrada",
+      "Preço Atual": "preco", "Investido": "investido", "SL": "sl", "TP": "tp",
+      "P&L": "pnl", "%": "pct", "IA": null, "Hold": null, "Status": "status", "Mercado": null,
+    };
+
     // Resumo por origem (só trades fechados) — para comparar o que compensa
     const resumoOrigem = {};
     activeTrades.filter(t => t.status !== "ABERTA").forEach(t => {
@@ -3241,13 +3292,27 @@ JSON: {"signals":[{"id":"btc","sinal":"COMPRAR|VENDER|AGUARDAR","razao":"1 frase
             <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 11, minWidth: 1320 }}>
               <thead>
                 <tr style={{ borderBottom: `1px solid ${T.border}` }}>
-                  {["Ativo","Cat.","Estratégia","Origem","Abertura","Saída","Duração","Entrada","Preço Atual","Investido","SL","TP","P&L","%","IA","Hold","Status","Mercado"].map(h => (
-                    <th key={h} style={{ padding: "8px 10px", textAlign: "left", color: T.muted, fontSize: 8, letterSpacing: "0.1em", textTransform: "uppercase", fontWeight: 600 }}>{h}</th>
-                  ))}
+                  {["Ativo","Cat.","Estratégia","Origem","Abertura","Saída","Duração","Entrada","Preço Atual","Investido","SL","TP","P&L","%","IA","Hold","Status","Mercado"].map(h => {
+                    const key = colSortKey[h];
+                    const active = key && histSortKey === key;
+                    return (
+                      <th key={h}
+                        onClick={key ? () => toggleSort(key) : undefined}
+                        style={{
+                          padding: "8px 10px", textAlign: "left", fontSize: 8, letterSpacing: "0.1em",
+                          textTransform: "uppercase", fontWeight: 600, whiteSpace: "nowrap",
+                          color: active ? T.aLight : T.muted,
+                          cursor: key ? "pointer" : "default",
+                          userSelect: "none",
+                        }}>
+                        {h}{active ? (histSortDir === "asc" ? " ▲" : " ▼") : (key ? " ⇅" : "")}
+                      </th>
+                    );
+                  })}
                 </tr>
               </thead>
               <tbody>
-                {filtered.map(t => {
+                {sortedFiltered.map(t => {
                   const pnl    = t.pnl !== undefined ? t.pnl : t.curPnl;
                   const isOpen = t.status === "ABERTA";
                   const a      = findAsset(t);
