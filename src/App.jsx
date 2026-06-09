@@ -294,6 +294,9 @@ export default function TradeAI() {
   const liveSettingsRef = useRef({ capitalTotal:1000, modoValor:"fixo", valorFixo:50, percentagem:3,
     riscoPerfil:"conservador", maxPosicoesAbertas:3, stopLossPadrao:5, takeProfitPadrao:10, autoInvestir:false });
   const [histTab, setHistTab] = useState("sim");   // "sim" | "live"
+  // O separador do histórico segue o toggle principal: ao mudar de Simulação
+  // para Live (paper/real), o histórico mostra logo os trades desse modo.
+  useEffect(() => { setHistTab(simMode ? "sim" : "live"); }, [simMode]);
   // ── Day Trading ──
   const [dtActive,     setDtActive]     = useState(false);    // monitor activo
   const [dtAssets,     setDtAssets]     = useState([]);       // ativos a monitorizar com AI
@@ -465,6 +468,10 @@ export default function TradeAI() {
   const botHeartbeatRecente = !!(botStatus?.alive && botStatus?.lastSeen && (Date.now() - botStatus.lastSeen < 3 * 60 * 1000));
   const botModoBate = !botStatus?.mode || (simMode === (botStatus.mode === "sim"));
   const botAtivo = botHeartbeatRecente && botModoBate;
+  // Distinguir paper (dinheiro fictício na corretora) de real (dinheiro a sério).
+  // A app só tinha sim/live; o bot publica o modo verdadeiro no heartbeat.
+  const botModoReal  = botStatus?.mode === "real";
+  const botModoPaper = botStatus?.mode === "paper";
   useEffect(() => { botActiveRef.current = botAtivo; }, [botAtivo]);
   useEffect(() => { stratRef.current = strategies; }, [strategies]);
   useEffect(() => { posRef.current = positions; }, [positions]);
@@ -543,10 +550,18 @@ export default function TradeAI() {
         // ── Determina o modo ativo (SIM ou LIVE) e respetivos setters/refs ──
         const isSim = simModeRef.current;
 
-        // ⛔ Se o bot 24/7 está ativo e estamos em SIM, o BOT é a única autoridade de
-        //    trading. O browser não abre nem fecha posições (evita conflitos de saldo).
-        //    A app continua apenas a mostrar o que o bot escreve no Firestore.
-        //    Vale para sim E live: se o bot 24/7 está vivo, ele é a única autoridade.
+        // ⛔ REGRA ABSOLUTA: o motor do browser SÓ pode negociar em SIMULAÇÃO.
+        //    Em paper/real (live), a autoridade de trading é EXCLUSIVAMENTE o bot
+        //    24/7 no servidor. A app é só um visor — lê o que o bot escreve no
+        //    Firestore e nunca abre/fecha posições. Isto evita que a app crie
+        //    trades fantasma (preços simulados, $NaN) etiquetados como "live",
+        //    que foi o que encheu o histórico de paper com SOL/XRP a €500.
+        if (!isSim) {
+          return t; // live/paper → browser não toca em posições, só o bot manda
+        }
+
+        // ⛔ Em SIMULAÇÃO: se o bot 24/7 também está vivo, ele é a autoridade e o
+        //    browser cede (evita dois motores a escrever ao mesmo tempo).
         if (botActiveRef.current) {
           return t;
         }
@@ -2358,7 +2373,7 @@ JSON: {"signals":[{"id":"btc","sinal":"COMPRAR|VENDER|AGUARDAR","razao":"1 frase
                       <div style={{ fontSize:10, color:T.muted }}>{t.strategy}</div>
                     </div>
                     <div><div style={{ fontSize:9, color:T.muted }}>ENTRADA</div><div style={{ fontWeight:600, fontSize:12 }}>${t.entryPrice?.toFixed(2)}</div></div>
-                    <div><div style={{ fontSize:9, color:T.muted }}>SAÍDA</div><div style={{ fontWeight:600, fontSize:12 }}>${(+t.closePrice).toFixed(2)}</div></div>
+                    <div><div style={{ fontSize:9, color:T.muted }}>SAÍDA</div><div style={{ fontWeight:600, fontSize:12 }}>{Number.isFinite(+t.closePrice) ? `$${(+t.closePrice).toFixed(2)}` : "—"}</div></div>
                     <div><div style={{ fontSize:9, color:T.muted }}>INVESTIDO</div><div style={{ fontWeight:600 }}>€{t.amount}</div></div>
                     <div><Badge label={(() => { const win=(t.pnl||0)>=0; if(t.status==="TP")return "✓ TP"; if(t.status==="MANUAL")return "✓ Manual"; if(t.status==="AI-EXIT")return "🤖 AI"; if(t.status==="TRAIL"||(t.status==="SL"&&win))return "📈 Trailing"; if(t.status==="SL")return "🛑 SL"; return t.status||"MANUAL"; })()} color={t.status==="SL"&&(t.pnl||0)<0?T.red:(t.pnl||0)>=0?T.green:T.red}/></div>
                     <div style={{ textAlign:"right" }}>
@@ -2659,7 +2674,7 @@ JSON: {"signals":[{"id":"btc","sinal":"COMPRAR|VENDER|AGUARDAR","razao":"1 frase
                     {a?.icon} {isBuy ? "▲ Comprar" : "▼ Vender"} {a?.name}
                   </div>
                   <div style={{ fontSize: 11, color: T.muted, marginTop:3 }}>
-                    {simMode ? "◎ Simulação — sem dinheiro real" : "⚠ LIVE — dinheiro real no IBKR"}
+                    {simMode ? "◎ Simulação — sem dinheiro real" : botModoReal ? "⚠ LIVE — dinheiro real na Alpaca" : "📝 PAPER — dinheiro fictício na Alpaca"}
                   </div>
                 </div>
                 <button onClick={() => setOrderModal(null)} style={{ background:"none", border:"none", color:T.muted, fontSize:20, cursor:"pointer" }}>✕</button>
@@ -3117,7 +3132,7 @@ JSON: {"signals":[{"id":"btc","sinal":"COMPRAR|VENDER|AGUARDAR","razao":"1 frase
       <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
         {/* Mode tabs */}
         <div style={{ display: "flex", gap: 0, background: "rgba(0,0,0,0.3)", borderRadius: 10, overflow: "hidden", width: "fit-content" }}>
-          {[["sim","◎ Simulação"], ["live","● Live"]].map(([id, label]) => (
+          {[["sim","◎ Simulação"], ["live", botModoReal ? "● Live Real" : "📝 Paper"]].map(([id, label]) => (
             <button key={id} onClick={() => { setHistTab(id); setHistCat("Todos"); }} style={{
               padding: "10px 22px", fontSize: 12, fontWeight: 700, cursor: "pointer",
               background: histTab===id ? (id==="sim"?`${T.gold}20`:`${T.red}20`) : "transparent",
@@ -3316,7 +3331,7 @@ JSON: {"signals":[{"id":"btc","sinal":"COMPRAR|VENDER|AGUARDAR","razao":"1 frase
         {filtered.length === 0 ? (
           <Glass style={{ padding: "56px 24px", textAlign: "center" }}>
             <div style={{ color: T.muted, fontSize: 13 }}>
-              {histTab === "sim" ? "Sem trades de simulação ainda." : "Sem trades live ainda."}
+              {histTab === "sim" ? "Sem trades de simulação ainda." : botModoReal ? "Sem trades live ainda." : "Sem trades em paper ainda."}
             </div>
           </Glass>
         ) : (
@@ -3373,7 +3388,7 @@ JSON: {"signals":[{"id":"btc","sinal":"COMPRAR|VENDER|AGUARDAR","razao":"1 frase
                         })()}
                       </td>
                       <td style={{ padding: "9px 10px" }}>${t.entryPrice?.toFixed(2)}</td>
-                      <td style={{ padding: "9px 10px" }}>{isOpen ? `$${t.livePrice ? fmt(t.livePrice, a?.id || t.assetId) : "—"}` : `$${(+t.closePrice).toFixed(2)}`}</td>
+                      <td style={{ padding: "9px 10px" }}>{isOpen ? `$${t.livePrice ? fmt(t.livePrice, a?.id || t.assetId) : "—"}` : (Number.isFinite(+t.closePrice) ? `$${(+t.closePrice).toFixed(2)}` : "—")}</td>
                       <td style={{ padding: "9px 10px" }}>€{t.amount}</td>
                       <td style={{ padding: "9px 10px", color: T.red }}>${t.sl}</td>
                       <td style={{ padding: "9px 10px", color: T.green }}>${t.tp}</td>
@@ -4320,10 +4335,12 @@ JSON puro:
         setAiCost(p => +(p + (c||0)).toFixed(5));
         if (useGroq && tk) setGroqTokens(p => p + tk);
 
-        // Auto-executar se urgência = AGORA e ação = COMPRAR e modo activo
-        // (não auto-compra se o bot 24/7 estiver a gerir o day trading no servidor)
-        const botGereDayTrading = simModeRef.current && botActiveRef.current;
-        if (dtActive && !botGereDayTrading && result.oportunidades) {
+        // Auto-executar se urgência = AGORA e ação = COMPRAR.
+        // REGRA ABSOLUTA: o browser só auto-executa em SIMULAÇÃO. Em paper/real
+        // quem negoceia é o bot 24/7 — a app nunca abre day-trades em live.
+        // E mesmo em sim, se o bot estiver vivo, cede-lhe a autoridade.
+        const appPodeNegociar = simModeRef.current && !botActiveRef.current;
+        if (dtActive && appPodeNegociar && result.oportunidades) {
           for (const op of result.oportunidades) {
             if (op.acao === "COMPRAR" && op.urgencia === "AGORA" && op.confianca >= dtMinConf) {
               const norm = s => String(s || "").toLowerCase().trim();
@@ -4498,7 +4515,7 @@ JSON puro:
             <div style={{ background:"rgba(0,0,0,0.2)", borderRadius:10, padding:"12px 14px" }}>
               <div style={{ fontSize:9, color:T.muted, letterSpacing:"0.11em", textTransform:"uppercase", marginBottom:8 }}>Modo / AI</div>
               <div style={{ fontSize:13, fontWeight:700, color:simMode?T.gold:T.red, marginBottom:8 }}>
-                {simMode ? "◎ Simulação" : "● Live Real"}
+                {simMode ? "◎ Simulação" : botModoReal ? "● Live Real" : "📝 Paper"}
               </div>
               <div style={{ fontSize:9, color:T.muted, marginBottom:5 }}>Motor de análise:</div>
               <div style={{ display:"flex", gap:4 }}>
@@ -5161,9 +5178,11 @@ JSON puro:
             </div>
           </div>
           {!simMode && (
-            <div style={{ display: "flex", alignItems: "center", gap: 5, background: `${T.red}14`, border: `1px solid ${T.red}33`, borderRadius: 99, padding: "3px 12px" }}>
-              <div style={{ width: 6, height: 6, borderRadius: "50%", background: T.red, animation: "pulse 1.5s infinite" }} />
-              <span style={{ color: T.red, fontWeight: 700, fontSize: 10, letterSpacing: "0.1em" }}>LIVE — DINHEIRO REAL</span>
+            <div style={{ display: "flex", alignItems: "center", gap: 5, background: botModoReal ? `${T.red}14` : `${T.gold}14`, border: `1px solid ${botModoReal ? T.red : T.gold}33`, borderRadius: 99, padding: "3px 12px" }}>
+              <div style={{ width: 6, height: 6, borderRadius: "50%", background: botModoReal ? T.red : T.gold, animation: "pulse 1.5s infinite" }} />
+              <span style={{ color: botModoReal ? T.red : T.gold, fontWeight: 700, fontSize: 10, letterSpacing: "0.1em" }}>
+                {botModoReal ? "LIVE — DINHEIRO REAL" : botModoPaper ? "PAPER — dinheiro fictício" : "LIVE — a verificar modo…"}
+              </span>
             </div>
           )}
           <span className="resp-hide-mobile" style={{ color: T.muted }}>Portfólio: <b style={{ color: T.text }}>€{portfolioV.toFixed(2)}</b></span>
@@ -5640,7 +5659,7 @@ JSON puro:
                     }}>
                       <div>
                         <span style={{ fontWeight: 700 }}>{t.assetSym}</span>
-                        <span style={{ color: T.muted, marginLeft: 8 }}>entrada ${t.entryPrice?.toFixed(2)} → saída ${t.closePrice?.toFixed(2)}</span>
+                        <span style={{ color: T.muted, marginLeft: 8 }}>entrada ${t.entryPrice?.toFixed(2)} → saída {Number.isFinite(+t.closePrice) ? `$${t.closePrice.toFixed(2)}` : "—"}</span>
                       </div>
                       <span style={{ fontWeight: 800, color: t.pnl >= 0 ? T.green : T.red }}>
                         {sign(t.pnl)}€{Math.abs(t.pnl||0).toFixed(2)}
