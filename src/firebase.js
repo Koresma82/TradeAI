@@ -72,6 +72,16 @@ export async function updateTrade(uid, id, updates) {
 export async function deleteTrade(uid, id) {
   await deleteDoc(userDoc(uid, "trades", id));
 }
+// ── Canal de comandos (app → bot) ────────────────────────────────────────────
+// Escreve uma intenção do utilizador (comprar/vender) na fila que o bot lê e
+// executa. A app NUNCA executa diretamente em paper/real — pede ao bot.
+export async function sendCommand(uid, command) {
+  const id = `cmd_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
+  await setDoc(userDoc(uid, "commands", id), {
+    ...command, id, status: "PENDENTE", createdTs: Date.now(), createdAt: serverTimestamp(),
+  });
+  return id;
+}
 export function subscribeTrades(uid, callback) {
   const q = query(userCol(uid, "trades"), orderBy("savedAt", "desc"), limit(500));
   return onSnapshot(q, snap => callback(snap.docs.map(d => ({ ...d.data(), id: d.id }))));

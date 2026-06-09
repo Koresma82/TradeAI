@@ -292,11 +292,11 @@ export default function TradeAI() {
   const [brokerBalances, setBrokerBalances] = useState(null); // { alpaca: n, binance: n, ... } via Firestore (bot)
   const brokerBalancesRef = useRef(null);
   const [liveSettings, setLiveSettings] = useState({      // definições separadas para live
-    capitalTotal: 1000, modoValor: "fixo", valorFixo: 50,
+    capitalTotal: 1000, modoValor: "percentagem", valorFixo: 50,
     percentagem: 3, riscoPerfil: "conservador",
     maxPosicoesAbertas: 3, stopLossPadrao: 5, takeProfitPadrao: 10, autoInvestir: false,
   });
-  const liveSettingsRef = useRef({ capitalTotal:1000, modoValor:"fixo", valorFixo:50, percentagem:3,
+  const liveSettingsRef = useRef({ capitalTotal:1000, modoValor:"percentagem", valorFixo:50, percentagem:3,
     riscoPerfil:"conservador", maxPosicoesAbertas:3, stopLossPadrao:5, takeProfitPadrao:10, autoInvestir:false });
   const [histTab, setHistTab] = useState("sim");   // "sim" | "live"
   // O separador do histórico segue o toggle principal: ao mudar de Simulação
@@ -369,7 +369,7 @@ export default function TradeAI() {
   // ── Definições ──
   const [settings, setSettings] = useState({
     capitalTotal:        5000,
-    modoValor:           "fixo",
+    modoValor:           "percentagem",
     valorFixo:           100,
     percentagem:         5,
     riscoPerfil:         "moderado",
@@ -2027,6 +2027,26 @@ JSON: {"signals":[{"id":"btc","sinal":"COMPRAR|VENDER|AGUARDAR","razao":"1 frase
     const tp     = +(price * (1 + s.takeProfitPadrao  / 100)).toFixed(a?.id === "eurusd" ? 4 : 2);
     const isSim  = simMode;
 
+    // ── PAPER/REAL: a app não executa — pede ao BOT (canal de comandos) ──
+    // O bot executa na Alpaca e passa a gerir a posição (SL/TP/venda). Evita as
+    // posições-fantasma que a app criava localmente em paper.
+    if (!isSim) {
+      if (!user) { toast("Precisas de sessão iniciada para enviar ordens ao bot", "error"); setOrderModal(null); return; }
+      if (side === "BUY") {
+        import("./firebase.js").then(({ sendCommand }) =>
+          sendCommand(user.uid, { type: "BUY", assetId, amount }).catch(() => {}));
+        toast(`📤 Ordem de COMPRA de ${a?.sym} (€${amount}) enviada ao bot`, "buy");
+      } else {
+        const openPos = positions.find(p => p.assetId === assetId);
+        if (!openPos) { toast(`Sem posição aberta em ${a?.sym} para vender`, "warn"); setOrderModal(null); return; }
+        import("./firebase.js").then(({ sendCommand }) =>
+          sendCommand(user.uid, { type: "SELL", posId: openPos.id, assetId }).catch(() => {}));
+        toast(`📤 Ordem de VENDA de ${a?.sym} enviada ao bot`, "sell");
+      }
+      setOrderModal(null);
+      return;
+    }
+
     if (side === "BUY") {
       // Verificar saldo suficiente
       const currentBal = isSim ? simBalRef.current : balRef.current;
@@ -3131,9 +3151,15 @@ JSON: {"signals":[{"id":"btc","sinal":"COMPRAR|VENDER|AGUARDAR","razao":"1 frase
     });
 
     const filteredClosed  = filtered.filter(t => t.status !== "ABERTA");
+    const filteredOpen    = filtered.filter(t => t.status === "ABERTA");
     const filteredWins    = filteredClosed.filter(t => (t.pnl||t.curPnl||0) > 0);
+    const filteredLosses  = filteredClosed.filter(t => (t.pnl||t.curPnl||0) <= 0);
     const filteredPnl     = filteredClosed.reduce((s,t) => s + (t.pnl||0), 0);
     const filteredWR      = filteredClosed.length ? filteredWins.length / filteredClosed.length * 100 : null;
+    // Repartição sobre o TOTAL (fechados + abertos), para veres a foto completa:
+    const totalTrades_    = filtered.length;
+    const pctPendentes    = totalTrades_ ? (filteredOpen.length / totalTrades_) * 100 : 0;
+    const pctPerdas       = totalTrades_ ? (filteredLosses.length / totalTrades_) * 100 : 0;
 
     return (
       <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
@@ -3154,12 +3180,13 @@ JSON: {"signals":[{"id":"btc","sinal":"COMPRAR|VENDER|AGUARDAR","razao":"1 frase
           {[
             { l: "P&L Realizado",     v: `${sign(filteredPnl)}${eur(filteredPnl)}`,                            c: filteredPnl >= 0 ? T.green : T.red },
             { l: "P&L Não Realizado", v: `${sign(unrealized)}${eur(unrealized)}`,                               c: unrealized >= 0 ? T.green : T.red },
-            { l: "Win Rate",          v: filteredWR !== null ? `${filteredWR.toFixed(1)}%` : "—",               c: T.gold   },
+            { l: "Win Rate",          v: filteredWR !== null ? `${filteredWR.toFixed(1)}%` : "—",               c: T.gold, sub: `${pctPendentes.toFixed(0)}% pendentes · ${pctPerdas.toFixed(0)}% perdas` },
             { l: "Total Trades",      v: filtered.length,                                                        c: T.accent },
           ].map(m => (
             <Glass key={m.l} style={{ padding: "18px 20px" }}>
               <div style={{ fontSize: 9, color: T.muted, letterSpacing: "0.13em", textTransform: "uppercase", marginBottom: 8 }}>{m.l}</div>
               <div style={{ fontSize: 24, fontWeight: 700, color: m.c }}>{m.v}</div>
+              {m.sub && <div style={{ fontSize: 9, color: T.muted, marginTop: 4 }}>{m.sub}</div>}
             </Glass>
           ))}
         </div>
@@ -3453,13 +3480,33 @@ JSON: {"signals":[{"id":"btc","sinal":"COMPRAR|VENDER|AGUARDAR","razao":"1 frase
                             : t.status === "TP"      ? "✓ TP"
                             : t.status === "MANUAL"  ? "✓ Manual"
                             : t.status === "AI-EXIT" ? "🤖 AI"
+                            : t.status === "ROTACAO" ? "🔄 Rotação"
+                            : t.status === "CANCELADA" ? "✗ Cancelada"
+                            : t.status === "FECHADA-RECON" ? "🔧 Reconciliada"
                             : isTrailWin             ? "📈 Trailing"
                             : isRealSL               ? "🛑 SL"
+                            : t.status && t.status !== "ABERTA" ? `· ${t.status}`
                             : win ? "✓ Fechado" : "✗ Fechado";
                           const c = isOpen ? T.blue
                             : isRealSL ? T.red
                             : win ? T.green : T.red;
-                          return <Badge label={lbl} color={c} />;
+                          return (
+                            <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+                              <Badge label={lbl} color={c} />
+                              {isOpen && !simMode && (
+                                <button
+                                  onClick={() => {
+                                    if (!user) { toast("Inicia sessão para enviar ordens ao bot", "error"); return; }
+                                    import("./firebase.js").then(({ sendCommand }) =>
+                                      sendCommand(user.uid, { type: "SELL", posId: t.id, assetId: t.assetId }).catch(()=>{}));
+                                    toast(`📤 Pedido de venda de ${t.assetSym} enviado ao bot`, "sell");
+                                  }}
+                                  title="Pedir ao bot para vender esta posição"
+                                  style={{ background: `${T.red}18`, border: `1px solid ${T.red}44`, color: T.red, borderRadius: 6, padding: "3px 8px", fontSize: 9, fontWeight: 700, cursor: "pointer", fontFamily: "inherit", whiteSpace: "nowrap" }}
+                                >▼ Vender</button>
+                              )}
+                            </div>
+                          );
                         })()}
                       </td>
                       <td style={{ padding: "9px 10px" }}>
@@ -3857,7 +3904,7 @@ pm2 save && pm2 startup`}</CodeBlock>
 
         {/* Mode tabs */}
         <div style={{ display: "flex", gap: 0, background: "rgba(0,0,0,0.3)", borderRadius: 10, overflow: "hidden", width: "fit-content" }}>
-          {[["sim","◎ Simulação"], ["live","● Live (Real)"]].map(([id, label]) => (
+          {[["sim","◎ Simulação"], ["live", botModoReal ? "● Live (Real)" : "📝 Paper"]].map(([id, label]) => (
             <button key={id} onClick={() => switchTab(id)} style={{
               padding: "10px 24px", fontSize: 13, fontWeight: 700, cursor: "pointer",
               background: defTab===id ? (id==="sim"?`${T.gold}20`:`${T.red}20`) : "transparent",
@@ -3874,7 +3921,7 @@ pm2 save && pm2 startup`}</CodeBlock>
         )}
         {!isSimTab && (
           <div style={{ background: `${T.red}0a`, border: `1px solid ${T.red}25`, borderRadius: 10, padding: "10px 16px", fontSize: 11, color: T.muted }}>
-            ⚠ Estas definições aplicam-se ao modo LIVE — trades com dinheiro real no IBKR.
+            ⚠ Estas definições aplicam-se ao modo {botModoReal ? "LIVE — trades com dinheiro real na Alpaca" : "PAPER — trades fictícios na Alpaca"}.
           </div>
         )}
 
@@ -3918,8 +3965,25 @@ pm2 save && pm2 startup`}</CodeBlock>
             </div>
           </div>
           <div style={{ background: `${T.green}0d`, border: `1px solid ${T.green}22`, borderRadius: 10, padding: "12px 16px", display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-            <span style={{ fontSize: 12, color: T.muted }}>💡 Cada trade investirá:</span>
+            <span style={{ fontSize: 12, color: T.muted }}>💡 Trade típico (confiança média):</span>
             <span style={{ fontSize: 20, fontWeight: 800, color: T.green }}>€{amountPreview}</span>
+          </div>
+          {/* Regras de dimensionamento — para saberes sempre como o valor é calculado */}
+          <div style={{ background: "rgba(255,255,255,0.03)", border: `1px solid ${T.border}`, borderRadius: 10, padding: "14px 16px", marginTop: 10 }}>
+            <div style={{ fontSize: 11, fontWeight: 700, color: T.aLight, marginBottom: 8 }}>📐 Como o valor de cada trade é decidido</div>
+            <div style={{ fontSize: 11, color: T.muted, lineHeight: 1.7 }}>
+              {local.modoValor === "percentagem" ? (
+                <>
+                  • Base: <b style={{ color: T.text }}>{local.percentagem}%</b> do saldo disponível.<br/>
+                  • Ajustado pela <b style={{ color: T.text }}>confiança da IA</b>: ≥90% → ×2 · ≥80% → ×1,5 · ≥70% → ×1,1 · senão menos.<br/>
+                </>
+              ) : (
+                <>• Valor fixo de <b style={{ color: T.text }}>€{local.valorFixo}</b> por trade.<br/></>
+              )}
+              • Nunca acima do teto: <b style={{ color: (local.maxValorTrade ?? 100) > 0 ? T.gold : T.text }}>{(local.maxValorTrade ?? 100) > 0 ? `€${local.maxValorTrade}` : "sem teto"}</b> por trade <span style={{ opacity: 0.7 }}>(em Limites de Segurança)</span>.<br/>
+              • Mínimo de <b style={{ color: T.text }}>€10</b> por trade.<br/>
+              • <b style={{ color: T.green }}>Só fecha em lucro</b> se este cobrir as comissões (cripto ~0,5% ida-volta) + margem — evita "ganhos" que na verdade dão prejuízo.
+            </div>
           </div>
         </Glass>
 
@@ -4645,6 +4709,14 @@ JSON puro:
                     {op.acao === "COMPRAR" && !alreadyOpen && (
                       <button onClick={() => {
                         const price2 = mktData[a?.id]?.price || a?.price || op.entrada;
+                        // PAPER/REAL: pede ao bot; não cria posição local.
+                        if (!simMode) {
+                          if (!user) { toast("Inicia sessão para enviar ordens ao bot", "error"); return; }
+                          import("./firebase.js").then(({ sendCommand }) =>
+                            sendCommand(user.uid, { type: "BUY", assetId: a?.id || op.id, amount: dtAmount }).catch(()=>{}));
+                          toast(`📤 Compra de ${op.nome} (€${dtAmount}) enviada ao bot`, "buy");
+                          return;
+                        }
                         const units2 = +(dtAmount / price2).toFixed(7);
                         const sl2    = +(price2 * (1 - dtMaxLoss    /100)).toFixed(2);
                         const tp2    = +(price2 * (1 + dtProfitTarget/100)).toFixed(2);
@@ -4653,16 +4725,11 @@ JSON puro:
                           action:"COMPRAR", entryPrice:price2, units:units2, amount:dtAmount,
                           sl:sl2, tp:tp2, strategy:`DayTrade`,
                           openedAt:new Date().toLocaleString("pt-PT"), openedTs: Date.now(), status:"ABERTA",
-                          mode: simMode ? "sim" : "live",
+                          mode: "sim",
                         };
                         setDtTrades(p => [trade, ...p]);
-                        if (simMode) {
-                          setSimPositions(p => [...p, { ...trade, stratId:"daytrading" }]);
-                          setSimBalance(b => { const n = +(Math.max(0,b-dtAmount)).toFixed(2); simBalRef.current=n; return n; });
-                        } else {
-                          setPositions(p => [...p, { ...trade, stratId:"daytrading" }]);
-                          setBalance(b => { const n = +(Math.max(0,b-dtAmount)).toFixed(2); balRef.current=n; return n; });
-                        }
+                        setSimPositions(p => [...p, { ...trade, stratId:"daytrading" }]);
+                        setSimBalance(b => { const n = +(Math.max(0,b-dtAmount)).toFixed(2); simBalRef.current=n; return n; });
                         toast(`⚡ Comprado ${op.nome} @$${price2.toFixed(2)}`, "buy");
                       }} style={{
                         width:"100%", background:`${T.green}20`, border:`1px solid ${T.green}55`,
