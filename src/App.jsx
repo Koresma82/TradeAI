@@ -307,6 +307,8 @@ export default function TradeAI() {
   const [histSortKey, setHistSortKey] = useState("abertura"); // coluna de ordenação do histórico
   const [histSortDir, setHistSortDir] = useState("desc");     // "asc" | "desc"
   const [histOpenDay, setHistOpenDay] = useState(null); // dia de arquivo expandido no histórico
+  const [arqSortKey, setArqSortKey] = useState("pnl");   // coluna de sort dentro de um dia
+  const [arqSortDir, setArqSortDir] = useState("desc");
   const [simStartedAt, setSimStartedAt] = useState(null); // timestamp início
   const simBalRef   = useRef(1000);
   const simPosRef   = useRef([]);
@@ -2600,19 +2602,21 @@ JSON: {"signals":[{"id":"btc","sinal":"COMPRAR|VENDER|AGUARDAR","razao":"1 frase
                 </div>
               )}
 
-              {/* BUY / SELL buttons */}
-              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", borderTop: `1px solid ${T.border}33` }}>
+              {/* BUY / SELL buttons — VENDER só aparece se tiveres posição aberta neste ativo */}
+              <div style={{ display: "grid", gridTemplateColumns: openPos ? "1fr 1fr" : "1fr", borderTop: `1px solid ${T.border}33` }}>
                 <button onClick={() => setOrderModal({ assetId: a.id, side: "BUY" })} style={{
                   background: `${T.green}12`, color: T.green, border: "none",
-                  borderRight: `1px solid ${T.border}33`,
+                  borderRight: openPos ? `1px solid ${T.border}33` : "none",
                   padding: "12px", fontSize: 12, fontWeight: 700, cursor: "pointer",
                   fontFamily: "inherit", transition: "background 0.12s",
                 }}>▲ COMPRAR</button>
-                <button onClick={() => setOrderModal({ assetId: a.id, side: "SELL" })} style={{
-                  background: `${T.red}12`, color: T.red, border: "none",
-                  padding: "12px", fontSize: 12, fontWeight: 700, cursor: "pointer",
-                  fontFamily: "inherit", transition: "background 0.12s",
-                }}>▼ VENDER</button>
+                {openPos && (
+                  <button onClick={() => setOrderModal({ assetId: a.id, side: "SELL" })} style={{
+                    background: `${T.red}12`, color: T.red, border: "none",
+                    padding: "12px", fontSize: 12, fontWeight: 700, cursor: "pointer",
+                    fontFamily: "inherit", transition: "background 0.12s",
+                  }}>▼ VENDER</button>
+                )}
               </div>
             </Glass>
           );
@@ -2929,7 +2933,8 @@ JSON: {"signals":[{"id":"btc","sinal":"COMPRAR|VENDER|AGUARDAR","razao":"1 frase
                 {filteredRecs.map(rec => {
                   const a      = assets.find(x => x.id === rec.id);
                   const isBest = rec.id === aiRec.melhor;
-                  const colRec = sc(rec.sinal);
+                  const sinalRec = normSignal(rec.id, rec.sinal);
+                  const colRec = sc(sinalRec);
                   return (
                     <Glass key={rec.id} style={{ padding:"18px 20px", position:"relative" }} glow={isBest}>
                       {isBest && (
@@ -2946,7 +2951,7 @@ JSON: {"signals":[{"id":"btc","sinal":"COMPRAR|VENDER|AGUARDAR","razao":"1 frase
                             <div style={{ fontSize:10, color:T.muted }}>${a ? fmt(a.price, a.id) : "—"}</div>
                           </div>
                         </div>
-                        <Badge label={rec.sinal} color={colRec} />
+                        <Badge label={sinalRec} color={colRec} />
                       </div>
                       {/* Razão */}
                       <div style={{ fontSize:12, color:T.text, lineHeight:1.65, marginBottom:10 }}>{rec.razao}</div>
@@ -3249,13 +3254,32 @@ JSON: {"signals":[{"id":"btc","sinal":"COMPRAR|VENDER|AGUARDAR","razao":"1 frase
                         <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 10, minWidth: 560 }}>
                           <thead>
                             <tr style={{ borderBottom: `1px solid ${T.border}` }}>
-                              {["Ativo","Estratégia","Entrada","Saída","P&L","Status"].map(h => (
-                                <th key={h} style={{ padding: "6px 8px", textAlign: "left", color: T.muted, fontSize: 8, letterSpacing: "0.08em", textTransform: "uppercase", fontWeight: 600 }}>{h}</th>
-                              ))}
+                              {[["Ativo","ativo"],["Estratégia","estrategia"],["Entrada","entrada"],["Saída","saida"],["P&L","pnl"],["Status","status"]].map(([h,key]) => {
+                                const active = arqSortKey === key;
+                                return (
+                                  <th key={h}
+                                    onClick={() => { if (active) setArqSortDir(d=>d==="asc"?"desc":"asc"); else { setArqSortKey(key); setArqSortDir("desc"); } }}
+                                    style={{ padding: "6px 8px", textAlign: "left", color: active ? T.aLight : T.muted, fontSize: 8, letterSpacing: "0.08em", textTransform: "uppercase", fontWeight: 600, cursor: "pointer", userSelect: "none" }}>
+                                    {h}{active ? (arqSortDir==="asc"?" ▲":" ▼") : " ⇅"}
+                                  </th>
+                                );
+                              })}
                             </tr>
                           </thead>
                           <tbody>
-                            {a.trades.map((t, ti) => {
+                            {[...a.trades].sort((x,y) => {
+                              const val = (t) => ({
+                                ativo: (t.assetSym||t.assetId||"").toLowerCase(),
+                                estrategia: (t.strategy||t.stratId||"").toLowerCase(),
+                                entrada: t.entryPrice ?? 0,
+                                saida: t.closePrice ?? 0,
+                                pnl: t.pnl ?? 0,
+                                status: (t.status||"").toLowerCase(),
+                              })[arqSortKey];
+                              const vx = val(x), vy = val(y);
+                              let c = (typeof vx === "number" && typeof vy === "number") ? vx - vy : String(vx).localeCompare(String(vy),"pt");
+                              return arqSortDir === "asc" ? c : -c;
+                            }).map((t, ti) => {
                               const tp = (t.pnl || 0) >= 0;
                               return (
                                 <tr key={t.id || ti} style={{ borderBottom: `1px solid ${T.border}55` }}>
@@ -4521,7 +4545,8 @@ JSON puro:
                 })();
                 const live = mktData[a?.id] || {};
                 const price = live.price ?? a?.price ?? op.entrada;
-                const col   = op.acao==="COMPRAR" ? T.green : op.acao==="VENDER" ? T.red : T.gold;
+                const acaoShow = normSignal(a?.id || op.id, op.acao);
+                const col   = acaoShow==="COMPRAR" ? T.green : acaoShow==="VENDER" ? T.red : T.gold;
                 const urgC  = op.urgencia==="AGORA" ? T.red : op.urgencia==="HOJE" ? T.gold : T.muted;
                 const alreadyOpen = dtTrades.some(t => t.assetId===(a?.id||op.id) && t.status==="ABERTA");
                 return (
@@ -4542,7 +4567,7 @@ JSON puro:
                         </div>
                       </div>
                       <div style={{ textAlign:"right" }}>
-                        <Badge label={op.acao} color={col} />
+                        <Badge label={acaoShow} color={col} />
                         <div style={{ fontSize:11, color:T.aLight, marginTop:4, fontWeight:700 }}>Confiança {op.confianca}%</div>
                       </div>
                     </div>
@@ -5446,13 +5471,19 @@ JSON puro:
               else if (p.stratId === "ai-brain") porOrigem.aibrain++;
               else porOrigem.estrategia++;
             });
-            const pctUsado = simCapital > 0 ? (capInvestido / simCapital) * 100 : 0;
+            // "Capital em uso": medir contra o que REALMENTE tens disponível
+            // agora (saldo livre + já investido), não contra o capital INICIAL.
+            // Com lucros acumulados o saldo cresce acima do capital inicial; usar
+            // o inicial dava leituras falsas tipo 112%. Esta base é o património
+            // de trabalho atual e nunca ultrapassa 100% sem sobre-alavancagem real.
+            const baseDisponivel = simBalance + capInvestido; // saldo livre + investido
+            const pctUsado = baseDisponivel > 0 ? (capInvestido / baseDisponivel) * 100 : 0;
             return (
               <>
                 {/* Barra de capital usado */}
                 <div style={{ marginBottom: 10 }}>
                   <div style={{ display: "flex", justifyContent: "space-between", fontSize: 9, color: T.muted, marginBottom: 4 }}>
-                    <span>CAPITAL EM USO: €{capInvestido.toFixed(2)} de €{simCapital}</span>
+                    <span>CAPITAL EM USO: €{capInvestido.toFixed(2)} de €{baseDisponivel.toFixed(2)}</span>
                     <span>{pctUsado.toFixed(0)}%</span>
                   </div>
                   <div style={{ height: 6, background: "rgba(255,255,255,0.08)", borderRadius: 99, overflow: "hidden" }}>
@@ -5474,18 +5505,38 @@ JSON puro:
                   ))}
                 </div>
                 {/* Saldo livre + posições por origem */}
+                {(() => {
+                  // Win rate REAL: conta os ganhos fechados sobre TODAS as posições
+                  // resolvidas + as abertas que estão NESTE momento em perda. Sem
+                  // isto, a win rate parece inflada (os vencedores fecham cedo com
+                  // micro-lucro e os perdedores ficam abertos sem contar).
+                  const closedWins = simClosed.filter(t => (t.pnl || 0) > 0).length;
+                  const closedLosses = simClosed.filter(t => (t.pnl || 0) <= 0).length;
+                  const openLosers = simPositions.filter(p => {
+                    const a = assets.find(x => x.id === p.assetId);
+                    const price = a?.price || p.entryPrice;
+                    return (price - p.entryPrice) * p.units < 0;
+                  }).length;
+                  const denom = closedWins + closedLosses + openLosers;
+                  const wrReal = denom ? (closedWins / denom) * 100 : null;
+                  const wrClosed = simClosed.length ? (closedWins / simClosed.length) * 100 : null;
+                  return (
                 <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 8, marginBottom: 8 }}>
                   {[
                     { l: "Saldo Livre", v: `€${simBalance.toFixed(2)}`, c: T.text },
                     { l: "P&L Aberto",  v: `${sign(unrealSim)}€${Math.abs(unrealSim).toFixed(2)}`, c: unrealSim>=0?T.green:T.red },
-                    { l: "Win Rate",    v: simClosed.length ? `${(simClosed.filter(t=>t.pnl>0).length/simClosed.length*100).toFixed(0)}%`:"—", c: T.gold },
+                    { l: "Win Real", v: wrReal !== null ? `${wrReal.toFixed(0)}%` : "—", c: wrReal !== null && wrReal >= 50 ? T.green : T.gold,
+                      sub: wrClosed !== null ? `fechadas: ${wrClosed.toFixed(0)}%` : null },
                   ].map(s => (
                     <div key={s.l} style={{ background: "rgba(255,255,255,0.04)", borderRadius: 7, padding: "7px 9px" }}>
                       <div style={{ fontSize: 8, color: T.muted, letterSpacing: "0.1em", textTransform: "uppercase", marginBottom: 3 }}>{s.l}</div>
                       <div style={{ fontSize: 13, fontWeight: 700, color: s.c }}>{s.v}</div>
+                      {s.sub && <div style={{ fontSize: 7, color: T.muted, marginTop: 2 }}>{s.sub}</div>}
                     </div>
                   ))}
                 </div>
+                  );
+                })()}
                 {/* Posições abertas por origem */}
                 <div style={{ display: "flex", gap: 6, fontSize: 9, flexWrap: "wrap" }}>
                   <span style={{ background: `${T.blue}18`, color: T.blue, padding: "3px 8px", borderRadius: 99 }}>🤖 AI Brain: {porOrigem.aibrain}</span>
