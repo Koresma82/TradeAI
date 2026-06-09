@@ -377,6 +377,8 @@ export default function TradeAI() {
     maxManuais:          5,
     maxEstrategias:      5,
     maxDayTrading:       5,
+    maxValorTrade:       100,   // teto € por trade (enviado ao bot)
+    maxPosicoesTotal:    40,    // limite global de posições abertas (enviado ao bot)
     rotacaoAtiva:        false,
     stopLossPadrao:      6,
     takeProfitPadrao:    12,
@@ -3999,6 +4001,26 @@ pm2 save && pm2 startup`}</CodeBlock>
                 </div>
               </div>
             ))}
+          </div>
+          {/* Controlo de risco: teto € por trade + limite global de posições */}
+          <div style={{ fontSize: 11, color: T.aLight, fontWeight: 700, marginBottom: 10 }}>Controlo de risco (aplica-se ao bot)</div>
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 16, marginBottom: 16 }}>
+            <div style={{ background: "rgba(0,0,0,0.18)", borderRadius: 10, padding: "14px 16px" }}>
+              <div style={{ fontSize: 11, fontWeight: 600, marginBottom: 4 }}>💶 Máximo por trade (€)</div>
+              <div style={{ fontSize: 10, color: T.muted, marginBottom: 10, lineHeight: 1.5 }}>Teto absoluto por posição, mesmo com saldo grande (ex.: paper $100k). A % continua a valer abaixo deste teto. <b>0 = sem teto</b> (só a %).</div>
+              <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+                <input type="range" min={0} max={1000} step={10} value={local.maxValorTrade ?? 100} onChange={e => upd("maxValorTrade", +e.target.value)} style={{ flex: 1, accentColor: T.accent }} />
+                <div style={{ fontSize: 16, fontWeight: 700, color: T.aLight, minWidth: 56, textAlign: "right" }}>{(local.maxValorTrade ?? 100) > 0 ? `€${local.maxValorTrade ?? 100}` : "—"}</div>
+              </div>
+            </div>
+            <div style={{ background: "rgba(0,0,0,0.18)", borderRadius: 10, padding: "14px 16px" }}>
+              <div style={{ fontSize: 11, fontWeight: 600, marginBottom: 4 }}>📊 Máximo de posições abertas (total)</div>
+              <div style={{ fontSize: 10, color: T.muted, marginBottom: 10, lineHeight: 1.5 }}>Limite global de posições abertas ao mesmo tempo (todas as origens). Impede centenas de entradas. <b>0 = sem limite</b>.</div>
+              <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+                <input type="range" min={0} max={100} step={5} value={local.maxPosicoesTotal ?? 40} onChange={e => upd("maxPosicoesTotal", +e.target.value)} style={{ flex: 1, accentColor: T.accent }} />
+                <div style={{ fontSize: 16, fontWeight: 700, color: T.aLight, minWidth: 32, textAlign: "right" }}>{(local.maxPosicoesTotal ?? 40) > 0 ? (local.maxPosicoesTotal ?? 40) : "—"}</div>
+              </div>
+            </div>
           </div>
           {/* Auto-investir + Rotação */}
           <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 16 }}>
