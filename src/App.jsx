@@ -282,7 +282,12 @@ export default function TradeAI() {
   const [simSummary,  setSimSummary]  = useState(null);   // resultado final mostrado no modal
   const [archivedSims, setArchivedSims] = useState([]);   // histórico de simulações arquivadas
   const [dailyArchives, setDailyArchives] = useState([]); // arquivos diários (bot, à meia-noite)
-  const [simMode, setSimMode] = useState(true);   // true = simulação | false = live real
+  const [simMode, setSimMode] = useState(() => {
+    // Lembra a última escolha (Simulação/Live) entre recarregamentos.
+    try { const v = localStorage.getItem("tradeai_simMode"); if (v !== null) return v === "true"; } catch {}
+    return true; // por defeito: simulação (mais seguro)
+  });
+  useEffect(() => { try { localStorage.setItem("tradeai_simMode", String(simMode)); } catch {} }, [simMode]);
   const simModeRef = useRef(true);
   const [brokerBalances, setBrokerBalances] = useState(null); // { alpaca: n, binance: n, ... } via Firestore (bot)
   const brokerBalancesRef = useRef(null);
