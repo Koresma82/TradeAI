@@ -170,6 +170,10 @@ const uid   = () => Math.random().toString(36).slice(2,9);
 const eur   = v => `€${Math.abs(v).toFixed(2)}`;
 const sign  = v => v >= 0 ? "+" : "−";
 const fmt   = (p, id) => id === "eurusd" ? p.toFixed(4) : p >= 1000 ? p.toFixed(2) : p.toFixed(3);
+// Comissão ida-e-volta estimada (€) — espelha o broker: cripto 0.25%/lado
+// (0.5% ida-volta), ações/ETF/restantes 0. `cat` vem do ativo (ex.: "Crypto").
+const roundTripFeeFor = (cat, amount) =>
+  +((cat === "Crypto" ? 0.005 : 0) * Math.abs(amount || 0)).toFixed(4);
 const pctFmt = v => `${v >= 0 ? "+" : ""}${v.toFixed(2)}%`;
 const riskC = r => r === "ALTO" ? T.red : r === "MÉDIO" ? T.gold : T.green;
 const genH  = (base, n = 64) => {
@@ -1960,8 +1964,9 @@ JSON: {"signals":[{"id":"btc","sinal":"COMPRAR|VENDER|AGUARDAR","razao":"1 frase
       return;
     }
     const price = a?.price || pos.entryPrice;
-    const pnl   = (price - pos.entryPrice) * pos.units;
-    const closedTrade = { ...pos, status: "MANUAL", closePrice: price, closedAt: new Date().toLocaleString("pt-PT"), closedTs: Date.now(), pnl };
+    const feeRt = roundTripFeeFor(a?.cat, pos.amount);
+    const pnl   = +(((price - pos.entryPrice) * pos.units) - feeRt).toFixed(4);
+    const closedTrade = { ...pos, status: "MANUAL", closePrice: price, closedAt: new Date().toLocaleString("pt-PT"), closedTs: Date.now(), fee: feeRt, pnl };
     if (isSim) {
       setSimClosed(p => [closedTrade, ...p]);
       setSimPositions(p => { const next = p.filter(x => x.id !== posId); simPosRef.current = next; return next; });
@@ -3251,15 +3256,15 @@ JSON: {"signals":[{"id":"btc","sinal":"COMPRAR|VENDER|AGUARDAR","razao":"1 frase
                     </div>
                     {isOpen && Array.isArray(a.trades) && (
                       <div style={{ padding: "0 14px 12px", overflowX: "auto" }}>
-                        <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 10, minWidth: 560 }}>
+                        <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 10, minWidth: 760 }}>
                           <thead>
                             <tr style={{ borderBottom: `1px solid ${T.border}` }}>
-                              {[["Ativo","ativo"],["Estratégia","estrategia"],["Entrada","entrada"],["Saída","saida"],["P&L","pnl"],["Status","status"]].map(([h,key]) => {
+                              {[["Ativo","ativo"],["Estratégia","estrategia"],["Abertura","abertura"],["Saída","saidaData"],["Entrada $","entrada"],["Saída $","saida"],["P&L","pnl"],["Status","status"]].map(([h,key]) => {
                                 const active = arqSortKey === key;
                                 return (
                                   <th key={h}
                                     onClick={() => { if (active) setArqSortDir(d=>d==="asc"?"desc":"asc"); else { setArqSortKey(key); setArqSortDir("desc"); } }}
-                                    style={{ padding: "6px 8px", textAlign: "left", color: active ? T.aLight : T.muted, fontSize: 8, letterSpacing: "0.08em", textTransform: "uppercase", fontWeight: 600, cursor: "pointer", userSelect: "none" }}>
+                                    style={{ padding: "6px 8px", textAlign: "left", color: active ? T.aLight : T.muted, fontSize: 8, letterSpacing: "0.08em", textTransform: "uppercase", fontWeight: 600, cursor: "pointer", userSelect: "none", whiteSpace: "nowrap" }}>
                                     {h}{active ? (arqSortDir==="asc"?" ▲":" ▼") : " ⇅"}
                                   </th>
                                 );
@@ -3271,6 +3276,8 @@ JSON: {"signals":[{"id":"btc","sinal":"COMPRAR|VENDER|AGUARDAR","razao":"1 frase
                               const val = (t) => ({
                                 ativo: (t.assetSym||t.assetId||"").toLowerCase(),
                                 estrategia: (t.strategy||t.stratId||"").toLowerCase(),
+                                abertura: t.openedTs || 0,
+                                saidaData: t.closedTs || 0,
                                 entrada: t.entryPrice ?? 0,
                                 saida: t.closePrice ?? 0,
                                 pnl: t.pnl ?? 0,
@@ -3285,6 +3292,8 @@ JSON: {"signals":[{"id":"btc","sinal":"COMPRAR|VENDER|AGUARDAR","razao":"1 frase
                                 <tr key={t.id || ti} style={{ borderBottom: `1px solid ${T.border}55` }}>
                                   <td style={{ padding: "6px 8px", fontWeight: 700 }}>{t.assetSym || t.assetId}</td>
                                   <td style={{ padding: "6px 8px", color: T.muted }}>{t.strategy || t.stratId || "—"}</td>
+                                  <td style={{ padding: "6px 8px", color: T.muted, whiteSpace: "nowrap", fontSize: 9 }}>{t.openedAt || "—"}</td>
+                                  <td style={{ padding: "6px 8px", color: T.muted, whiteSpace: "nowrap", fontSize: 9 }}>{t.closedAt || "—"}</td>
                                   <td style={{ padding: "6px 8px" }}>${t.entryPrice}</td>
                                   <td style={{ padding: "6px 8px" }}>${t.closePrice ?? "—"}</td>
                                   <td style={{ padding: "6px 8px", fontWeight: 700, color: tp ? T.green : T.red }}>{sign(t.pnl || 0)}€{Math.abs(t.pnl || 0).toFixed(2)}</td>
