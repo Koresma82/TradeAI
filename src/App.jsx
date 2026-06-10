@@ -301,13 +301,16 @@ export default function TradeAI() {
   // Três conjuntos independentes: simulação, paper e real. O bot lê o conjunto
   // certo conforme o MODE em que arranca (settings / paperSettings / realSettings
   // no Firestore). Real começa conservador por defeito (proteção de capital).
+  const CAT_AJUSTE_DEFAULT = { Crypto: 1.5, Commodity: 1.0, ETF: 0.7, Forex: 0.4, "Ação": 1.1 };
   const PAPER_DEFAULTS = { capitalTotal: 1000, modoValor: "percentagem", valorFixo: 50,
     percentagem: 3, riscoPerfil: "moderado",
-    maxPosicoesAbertas: 5, stopLossPadrao: 6, takeProfitPadrao: 12, autoInvestir: false };
+    maxPosicoesAbertas: 5, stopLossPadrao: 6, takeProfitPadrao: 12, autoInvestir: false,
+    catAjuste: { ...CAT_AJUSTE_DEFAULT } };
   const REAL_DEFAULTS  = { capitalTotal: 1000, modoValor: "fixo", valorFixo: 25,
     percentagem: 2, riscoPerfil: "conservador",
     maxPosicoesAbertas: 3, stopLossPadrao: 5, takeProfitPadrao: 10, autoInvestir: false,
-    maxValorTrade: 50, maxPosicoesTotal: 10 };
+    maxValorTrade: 50, maxPosicoesTotal: 10,
+    catAjuste: { ...CAT_AJUSTE_DEFAULT } };
   const [paperSettings, setPaperSettings] = useState({ ...PAPER_DEFAULTS });
   const [realSettings,  setRealSettings]  = useState({ ...REAL_DEFAULTS });
   const paperSettingsRef = useRef({ ...PAPER_DEFAULTS });
@@ -411,6 +414,7 @@ export default function TradeAI() {
     trailingStopPct:     4,      // distância (%) do trailing stop abaixo do pico
     aiExitOnFlip:        true,   // sair quando a IA muda de COMPRAR para VENDER
     aiSignalsMin:        15,     // intervalo (min) entre análises AI do bot — poupa tokens
+    catAjuste:           { Crypto: 1.5, Commodity: 1.0, ETF: 0.7, Forex: 0.4, "Ação": 1.1 }, // multiplicador de SL/TP/queda por categoria
   });
   const balRef    = useRef(INIT_BAL);
   const stratRef  = useRef([]);
@@ -721,10 +725,15 @@ export default function TradeAI() {
               const high     = Math.max(highs.current[aid]?.p || a.price, histHigh);
               const dropPct  = ((high - a.price) / high) * 100;
               const balNow   = balRefCur.current;
-              if (dropPct >= s.compra && balNow >= s.perTrade) {
+              const _cfg = (simModeRef.current ? settingsRef.current : liveSettingsRef.current) || {};
+              const _cf  = (_cfg.catAjuste && typeof _cfg.catAjuste[a.cat] === "number" && _cfg.catAjuste[a.cat] > 0) ? _cfg.catAjuste[a.cat] : 1;
+              const _compra = Math.min(15, Math.max(0.1, s.compra * _cf));
+              if (dropPct >= _compra && balNow >= s.perTrade) {
                 const units = +(s.perTrade / a.price).toFixed(7);
-                const sl    = +(a.price * (1 - s.sl / 100)).toFixed(a.id === "eurusd" ? 4 : 2);
-                const tp    = +(a.price * (1 + s.tp / 100)).toFixed(a.id === "eurusd" ? 4 : 2);
+                const _sl = Math.min(60, Math.max(0.3, s.sl * _cf));
+                const _tp = Math.min(60, Math.max(0.3, s.tp * _cf));
+                const sl    = +(a.price * (1 - _sl / 100)).toFixed(a.id === "eurusd" ? 4 : 2);
+                const tp    = +(a.price * (1 + _tp / 100)).toFixed(a.id === "eurusd" ? 4 : 2);
                 const pos   = {
                   id: uid(), assetId: a.id, assetName: a.name, assetSym: a.sym,
                   entryPrice: a.price, units, amount: s.perTrade, peak: a.price,
@@ -765,9 +774,12 @@ export default function TradeAI() {
             if (balRefCur.current < perTrade) return;
             const slPct = cfg.stopLossPadrao || 6;
             const tpPct = cfg.takeProfitPadrao || 12;
+            const _cfB = (cfg.catAjuste && typeof cfg.catAjuste[a.cat] === "number" && cfg.catAjuste[a.cat] > 0) ? cfg.catAjuste[a.cat] : 1;
             const units = +(perTrade / a.price).toFixed(7);
-            const sl    = +(a.price * (1 - slPct / 100)).toFixed(a.id === "eurusd" ? 4 : 2);
-            const tp    = +(a.price * (1 + tpPct / 100)).toFixed(a.id === "eurusd" ? 4 : 2);
+            const _slB = Math.min(60, Math.max(0.3, slPct * _cfB));
+            const _tpB = Math.min(60, Math.max(0.3, tpPct * _cfB));
+            const sl    = +(a.price * (1 - _slB / 100)).toFixed(a.id === "eurusd" ? 4 : 2);
+            const tp    = +(a.price * (1 + _tpB / 100)).toFixed(a.id === "eurusd" ? 4 : 2);
             const pos   = {
               id: uid(), assetId: a.id, assetName: a.name, assetSym: a.sym,
               entryPrice: a.price, units, amount: perTrade, peak: a.price,
@@ -4114,6 +4126,42 @@ pm2 save && pm2 startup`}</CodeBlock>
               ))}
             </div>
           </div>
+        </Glass>
+
+        {/* Ajuste por categoria de ativo */}
+        <Glass style={{ padding: "22px 24px" }}>
+          <div style={{ fontSize: 13, fontWeight: 700, color: T.aLight, marginBottom: 6 }}>🎚 Ajuste por Tipo de Ativo</div>
+          <div style={{ fontSize: 11, color: T.muted, marginBottom: 16, lineHeight: 1.6 }}>
+            Multiplica o SL/TP/queda do perfil conforme a volatilidade de cada classe. <b>1.0×</b> = igual ao perfil.
+            Crypto mexe muito (valores mais largos); forex pouco (mais apertados). Aplica-se ao bot.
+          </div>
+          {[
+            { cat: "Crypto",    emoji: "₿",  hint: "BTC, ETH, SOL, XRP…" },
+            { cat: "Commodity", emoji: "🛢", hint: "Petróleo, ouro, prata" },
+            { cat: "ETF",       emoji: "📈", hint: "SPY, QQQ, GLD…" },
+            { cat: "Forex",     emoji: "💱", hint: "EUR/USD, GBP/USD…" },
+            { cat: "Ação",      emoji: "🏢", hint: "ações individuais (futuro)" },
+          ].map(({ cat, emoji, hint }) => {
+            const ca = local.catAjuste || {};
+            const val = typeof ca[cat] === "number" ? ca[cat] : 1.0;
+            const slEf = +(local.stopLossPadrao * val).toFixed(1);
+            const tpEf = +(local.takeProfitPadrao * val).toFixed(1);
+            return (
+              <div key={cat} style={{ display: "flex", alignItems: "center", gap: 14, padding: "10px 0", borderBottom: `1px solid ${T.border}` }}>
+                <div style={{ width: 130, flexShrink: 0 }}>
+                  <div style={{ fontSize: 12, fontWeight: 700 }}>{emoji} {cat}</div>
+                  <div style={{ fontSize: 9, color: T.muted }}>{hint}</div>
+                </div>
+                <input type="range" min={0.2} max={2.5} step={0.1} value={val}
+                  onChange={e => { const v = +e.target.value; setLocal(prev => ({ ...prev, catAjuste: { ...(prev.catAjuste||{}), [cat]: v } })); }}
+                  style={{ flex: 1, accentColor: T.aLight }} />
+                <div style={{ width: 46, textAlign: "right", fontSize: 14, fontWeight: 700, color: T.aLight }}>{val.toFixed(1)}×</div>
+                <div style={{ width: 120, textAlign: "right", fontSize: 10, color: T.muted }}>
+                  SL <span style={{ color: T.red }}>{slEf}%</span> · TP <span style={{ color: T.green }}>{tpEf}%</span>
+                </div>
+              </div>
+            );
+          })}
         </Glass>
 
         {/* Limites */}
