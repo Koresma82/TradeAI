@@ -176,6 +176,12 @@ const roundTripFeeFor = (cat, amount) =>
   +((cat === "Crypto" ? 0.005 : 0) * Math.abs(amount || 0)).toFixed(4);
 const pctFmt = v => `${v >= 0 ? "+" : ""}${v.toFixed(2)}%`;
 const riskC = r => r === "ALTO" ? T.red : r === "MÉDIO" ? T.gold : T.green;
+// Cor por PERFIL (do mais defensivo ao mais arriscado).
+const perfilC = p => ({
+  conservador: T.green, scalper: T.green,
+  moderado: T.blue, equilibrado: T.blue,
+  volatil: T.gold, agressivo: T.red,
+}[p] || T.blue);
 const genH  = (base, n = 64) => {
   let p = base * 0.97;
   return Array.from({ length: n }, (_, i) => {
@@ -446,7 +452,10 @@ export default function TradeAI() {
     // Teto por posição (% do saldo) e fração-base por perfil.
     const PERFIL = {
       conservador: { teto: 0.10, base: 0.04 },
+      scalper:     { teto: 0.12, base: 0.05 },
       moderado:    { teto: 0.20, base: 0.08 },
+      equilibrado: { teto: 0.18, base: 0.07 },
+      volatil:     { teto: 0.22, base: 0.09 },
       agressivo:   { teto: 0.33, base: 0.14 },
     };
     const cfg = PERFIL[perfil] || PERFIL.moderado;
@@ -762,7 +771,7 @@ export default function TradeAI() {
             const pos   = {
               id: uid(), assetId: a.id, assetName: a.name, assetSym: a.sym,
               entryPrice: a.price, units, amount: perTrade, peak: a.price,
-              strategy: `🤖 AI Brain (${sg.confianca}%)`, stratId: "ai-brain", sl, tp,
+              strategy: `🤖 AI Brain (${sg.confianca}%)`, stratId: "ai-brain", aiSource: "groq", sl, tp,
               openedAt: new Date().toLocaleString("pt-PT"), openedTs: Date.now(), status: "ABERTA",
               mode: isSim ? "sim" : "live",
             };
@@ -1001,7 +1010,9 @@ JSON puro — inclui TODOS os ativos relevantes de TODAS as categorias:
     const origemDe = (p) => {
       if (p.stratId === "daytrading") return { key: "daytrade", label: "Day Trading", icon: "⚡", cor: T.gold };
       if (p.stratId === "manual")     return { key: "manual",   label: "Compras manuais", icon: "✋", cor: T.accent };
-      if (p.stratId === "ai-brain")   return { key: "aibrain",  label: "Cérebro AI", icon: "🤖", cor: T.aLight };
+      if (p.stratId === "ai-brain")   return p.aiSource === "tecnico"
+        ? { key: "aitecnico", label: "Cérebro AI (técnico)", icon: "🧮", cor: T.blue }
+        : { key: "aibrain",  label: "Cérebro AI", icon: "🤖", cor: T.aLight };
       if (p.stratId && stratIds.has(p.stratId)) return { key: "estrategia", label: "Estratégias", icon: "📊", cor: T.green };
       return { key: "orfa", label: "Órfãs (estratégia apagada)", icon: "🔗", cor: T.gold }; // sem stratId ou estratégia inexistente
     };
@@ -1044,7 +1055,7 @@ JSON puro — inclui TODOS os ativos relevantes de TODAS as categorias:
                 {botPaused
                   ? "As posições abertas continuam protegidas (SL/TP e vendas). Não abre novas. Ideal antes de um deploy."
                   : "As tuas posições são geridas no servidor, mesmo com a app fechada."}
-                {!botPaused && botStatus?.features?.aiBrain && " · Cérebro AI ON"}
+                {!botPaused && botStatus?.features?.aiBrain && (botStatus?.features?.aiBrainFallback ? " · Cérebro AI (modo técnico)" : " · Cérebro AI ON")}
                 {!botPaused && botStatus?.features?.trailingStop && " · Trailing Stop ON"}
               </div>
             </div>
@@ -2311,7 +2322,7 @@ JSON: {"signals":[{"id":"btc","sinal":"COMPRAR|VENDER|AGUARDAR","razao":"1 frase
                                 {pos.mode==="sim" && <Badge label="SIM" color={T.gold}/>}
                                 <Badge label={open?"ABERTO":"FECHADO"} color={open?T.green:T.red}/>
                                 {(() => {
-                                  const o = pos.stratId === "ai-brain"   ? { l:"🤖 AI Brain",   c:T.accent }
+                                  const o = pos.stratId === "ai-brain"   ? (pos.aiSource === "tecnico" ? { l:"🧮 AI Técnico", c:T.blue } : { l:"🤖 AI Brain", c:T.accent })
                                           : pos.stratId === "daytrading" ? { l:"⚡ Day Trade",  c:T.gold }
                                           : pos.stratId === "manual"     ? { l:"✋ Manual",     c:T.muted }
                                           :                                { l:"🎯 Estratégia", c:T.blue };
@@ -2559,9 +2570,11 @@ JSON: {"signals":[{"id":"btc","sinal":"COMPRAR|VENDER|AGUARDAR","razao":"1 frase
                       </div>
                       <div style={{ display: "flex", gap: 5, marginTop: 3, flexWrap:"wrap", alignItems:"center" }}>
                         <span style={{ fontSize: 9, color: T.muted }}>{a.cat} · {a.sym}</span>
-                        {isLive
-                          ? <span style={{ fontSize: 9, color: T.green, fontWeight: 700 }}>● LIVE</span>
-                          : <span style={{ fontSize: 9, color: T.gold }}>◎ SIM</span>}
+                        {simMode
+                          ? <span style={{ fontSize: 9, color: T.gold }}>◎ SIM</span>
+                          : botModoReal
+                            ? <span style={{ fontSize: 9, color: T.red, fontWeight: 700 }}>● REAL</span>
+                            : <span style={{ fontSize: 9, color: T.blue, fontWeight: 700 }}>📝 PAPER</span>}
                         {marketSignals[a.id] && (() => {
                           const sig = marketSignals[a.id];
                           const sinalShow = normSignal(a.id, sig.sinal);
@@ -3115,7 +3128,7 @@ JSON: {"signals":[{"id":"btc","sinal":"COMPRAR|VENDER|AGUARDAR","razao":"1 frase
 
     // Classificar origem de cada trade
     const origemDe = (t) =>
-      t.stratId === "ai-brain"   ? "🤖 AI Brain"
+      t.stratId === "ai-brain"   ? (t.aiSource === "tecnico" ? "🧮 AI Técnico" : "🤖 AI Brain")
       : t.stratId === "manual"   ? "✋ Manual"
       : t.stratId === "daytrading" ? "⚡ Day Trading"
       : "🎯 Estratégias";
@@ -3944,9 +3957,12 @@ pm2 save && pm2 startup`}</CodeBlock>
 
     const upd  = (k, v) => setLocal(p => ({ ...p, [k]: v }));
     const perfilInfo = {
-      conservador: { desc: "Quedas maiores para acionar compra, SL/TP mais apertados. Menos trades, mais seguros.", sl: 4, tp: 8,  compra: 2.5 },
-      moderado:    { desc: "Equilíbrio entre oportunidades e risco. Recomendado para começar.",                    sl: 6, tp: 12, compra: 1.5 },
-      agressivo:   { desc: "Mais trades, entradas mais frequentes. Potencial de ganho e perda maior.",             sl: 9, tp: 18, compra: 0.8 },
+      conservador: { desc: "Quedas maiores para acionar compra, SL/TP apertados. Menos trades, mais seguros.",                       sl: 4, tp: 8,  compra: 2.5 },
+      moderado:    { desc: "Equilíbrio entre oportunidades e risco. Bom ponto de partida.",                                          sl: 6, tp: 12, compra: 1.5 },
+      agressivo:   { desc: "Mais trades, entradas mais frequentes. TP distante — só compensa em mercados claramente em alta.",       sl: 9, tp: 18, compra: 0.8 },
+      scalper:     { desc: "Alvos curtos: fecha em lucro muitas vezes (win rate alto). Combina muito bem com o TP parcial ligado.",  sl: 3, tp: 4,  compra: 1.0 },
+      equilibrado: { desc: "Rácio quase 1:1 entre risco e ganho. Win rate alto, ganhos e perdas de tamanho parecido.",              sl: 5, tp: 6,  compra: 1.5 },
+      volatil:     { desc: "Pensado para cripto: dá espaço à volatilidade (SL largo) mas com TP alcançável. Menos SLs prematuros.",  sl: 8, tp: 10, compra: 2.0 },
     };
 
     const save = () => {
@@ -4059,24 +4075,27 @@ pm2 save && pm2 startup`}</CodeBlock>
         {/* Perfil de risco */}
         <Glass style={{ padding: "22px 24px" }}>
           <div style={{ fontSize: 13, fontWeight: 700, color: T.aLight, marginBottom: 16 }}>🎯 Perfil de Risco</div>
-          <div style={{ display: "grid", gridTemplateColumns: "repeat(3,1fr)", gap: 10, marginBottom: 16 }}>
+          <div className="resp-grid" style={{ display: "grid", gridTemplateColumns: "repeat(3,1fr)", gap: 10, marginBottom: 16 }}>
             {[
               { id: "conservador", emoji: "🛡️", label: "Conservador",  desc: "Menos trades, mais seguros" },
-              { id: "moderado",    emoji: "⚖️", label: "Moderado",     desc: "Equilíbrio (recomendado)"  },
-              { id: "agressivo",   emoji: "🚀", label: "Agressivo",    desc: "Mais trades, mais risco"   },
+              { id: "moderado",    emoji: "⚖️", label: "Moderado",     desc: "Equilíbrio geral"           },
+              { id: "agressivo",   emoji: "🚀", label: "Agressivo",    desc: "Mais trades, mais risco"    },
+              { id: "scalper",     emoji: "🎯", label: "Scalper",      desc: "Alvos curtos, win rate alto"},
+              { id: "equilibrado", emoji: "⚡", label: "Equilibrado",  desc: "Rácio risco/ganho 1:1"      },
+              { id: "volatil",     emoji: "🌊", label: "Cripto Volátil",desc: "Espaço à volatilidade"     },
             ].map(p => (
               <div key={p.id} onClick={() => {
                 const pi = perfilInfo[p.id];
                 setLocal(prev => ({ ...prev, riscoPerfil: p.id, stopLossPadrao: pi.sl, takeProfitPadrao: pi.tp }));
               }} style={{
-                padding: "16px", borderRadius: 12, cursor: "pointer",
-                background: local.riscoPerfil === p.id ? `${riskC(p.id.toUpperCase())}18` : "rgba(255,255,255,0.03)",
-                border: `2px solid ${local.riscoPerfil === p.id ? riskC(p.id.toUpperCase()) : T.border}`,
+                padding: "14px", borderRadius: 12, cursor: "pointer",
+                background: local.riscoPerfil === p.id ? `${perfilC(p.id)}18` : "rgba(255,255,255,0.03)",
+                border: `2px solid ${local.riscoPerfil === p.id ? perfilC(p.id) : T.border}`,
                 textAlign: "center", transition: "all 0.15s",
               }}>
-                <div style={{ fontSize: 28, marginBottom: 8 }}>{p.emoji}</div>
-                <div style={{ fontWeight: 700, fontSize: 13, marginBottom: 4 }}>{p.label}</div>
-                <div style={{ fontSize: 11, color: T.muted }}>{p.desc}</div>
+                <div style={{ fontSize: 24, marginBottom: 6 }}>{p.emoji}</div>
+                <div style={{ fontWeight: 700, fontSize: 12, marginBottom: 3 }}>{p.label}</div>
+                <div style={{ fontSize: 10, color: T.muted }}>{p.desc}</div>
               </div>
             ))}
           </div>
