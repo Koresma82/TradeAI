@@ -291,13 +291,28 @@ export default function TradeAI() {
   const simModeRef = useRef(true);
   const [brokerBalances, setBrokerBalances] = useState(null); // { alpaca: n, binance: n, ... } via Firestore (bot)
   const brokerBalancesRef = useRef(null);
-  const [liveSettings, setLiveSettings] = useState({      // definições separadas para live
-    capitalTotal: 1000, modoValor: "percentagem", valorFixo: 50,
-    percentagem: 3, riscoPerfil: "conservador",
+  // ── Definições separadas por MODO ──────────────────────────────────────────
+  // Três conjuntos independentes: simulação, paper e real. O bot lê o conjunto
+  // certo conforme o MODE em que arranca (settings / paperSettings / realSettings
+  // no Firestore). Real começa conservador por defeito (proteção de capital).
+  const PAPER_DEFAULTS = { capitalTotal: 1000, modoValor: "percentagem", valorFixo: 50,
+    percentagem: 3, riscoPerfil: "moderado",
+    maxPosicoesAbertas: 5, stopLossPadrao: 6, takeProfitPadrao: 12, autoInvestir: false };
+  const REAL_DEFAULTS  = { capitalTotal: 1000, modoValor: "fixo", valorFixo: 25,
+    percentagem: 2, riscoPerfil: "conservador",
     maxPosicoesAbertas: 3, stopLossPadrao: 5, takeProfitPadrao: 10, autoInvestir: false,
-  });
-  const liveSettingsRef = useRef({ capitalTotal:1000, modoValor:"percentagem", valorFixo:50, percentagem:3,
-    riscoPerfil:"conservador", maxPosicoesAbertas:3, stopLossPadrao:5, takeProfitPadrao:10, autoInvestir:false });
+    maxValorTrade: 50, maxPosicoesTotal: 10 };
+  const [paperSettings, setPaperSettings] = useState({ ...PAPER_DEFAULTS });
+  const [realSettings,  setRealSettings]  = useState({ ...REAL_DEFAULTS });
+  const paperSettingsRef = useRef({ ...PAPER_DEFAULTS });
+  const realSettingsRef  = useRef({ ...REAL_DEFAULTS });
+  const paperLoadedRef   = useRef(false); // true quando paperSettings veio do Firestore (trava a migração do legado)
+  const [botPaused, setBotPaused] = useState(false); // pausa de novas entradas do bot (settings/botControl)
+  useEffect(() => { paperSettingsRef.current = paperSettings; }, [paperSettings]);
+  useEffect(() => { realSettingsRef.current  = realSettings;  }, [realSettings]);
+  // liveSettings/liveSettingsRef (paper ou real conforme o modo do bot) são
+  // derivados mais abaixo, depois de botModoReal estar disponível.
+  const liveSettingsRef = useRef({ ...PAPER_DEFAULTS });
   const [histTab, setHistTab] = useState("sim");   // "sim" | "live"
   // O separador do histórico segue o toggle principal: ao mudar de Simulação
   // para Live (paper/real), o histórico mostra logo os trades desse modo.
@@ -454,7 +469,6 @@ export default function TradeAI() {
   useEffect(() => { brokerBalancesRef.current = brokerBalances; }, [brokerBalances]);
   useEffect(() => { tabRef.current = tab; }, [tab]);
   useEffect(() => { simBalRef.current = simBalance; }, [simBalance]);
-  useEffect(() => { liveSettingsRef.current = liveSettings; }, [liveSettings]);
   // Persistir day trading trades + P&L (com debounce simples)
   useEffect(() => {
     if (!user || !dbLoaded) return;
@@ -479,6 +493,10 @@ export default function TradeAI() {
   // A app só tinha sim/live; o bot publica o modo verdadeiro no heartbeat.
   const botModoReal  = botStatus?.mode === "real";
   const botModoPaper = botStatus?.mode === "paper";
+  // Conjunto de definições "live" efetivo: real se o bot está em real, senão
+  // paper. É isto que a app usa para sizing/preview quando não está em sim.
+  const liveSettings = botModoReal ? realSettings : paperSettings;
+  useEffect(() => { liveSettingsRef.current = botModoReal ? realSettings : paperSettings; }, [botModoReal, paperSettings, realSettings]);
   // Rótulo claro e único para qualquer modo do bot — evita mostrar "LIVE"
   // genérico que confunde paper com real. Usar em todo o lado.
   const modoLabelBot = (m) => m === "real" ? "DINHEIRO REAL" : m === "paper" ? "Paper" : m === "sim" ? "Simulação" : "—";
@@ -1015,17 +1033,37 @@ JSON puro — inclui TODOS os ativos relevantes de TODAS as categorias:
         {botAtivo ? (
           <div style={{
             display:"flex", alignItems:"center", gap:12, padding:"12px 18px", borderRadius:12,
-            background:`${T.green}10`, border:`1px solid ${T.green}33`,
+            background: botPaused ? `${T.gold}10` : `${T.green}10`, border:`1px solid ${botPaused ? T.gold : T.green}33`,
           }}>
-            <div style={{ width:9, height:9, borderRadius:"50%", background:T.green, animation:"pulse 1.2s infinite", flexShrink:0 }}/>
+            <div style={{ width:9, height:9, borderRadius:"50%", background: botPaused ? T.gold : T.green, animation: botPaused ? "none" : "pulse 1.2s infinite", flexShrink:0 }}/>
             <div style={{ flex:1 }}>
-              <div style={{ fontSize:12, fontWeight:700, color:T.green }}>🤖 Bot 24/7 ativo — a operar no servidor</div>
+              <div style={{ fontSize:12, fontWeight:700, color: botPaused ? T.gold : T.green }}>
+                {botPaused ? "⏸ Bot pausado — sem novas entradas" : "🤖 Bot 24/7 ativo — a operar no servidor"}
+              </div>
               <div style={{ fontSize:10, color:T.muted, marginTop:2 }}>
-                As tuas posições são geridas no servidor, mesmo com a app fechada.
-                {botStatus?.features?.aiBrain && " · Cérebro AI ON"}
-                {botStatus?.features?.trailingStop && " · Trailing Stop ON"}
+                {botPaused
+                  ? "As posições abertas continuam protegidas (SL/TP e vendas). Não abre novas. Ideal antes de um deploy."
+                  : "As tuas posições são geridas no servidor, mesmo com a app fechada."}
+                {!botPaused && botStatus?.features?.aiBrain && " · Cérebro AI ON"}
+                {!botPaused && botStatus?.features?.trailingStop && " · Trailing Stop ON"}
               </div>
             </div>
+            <button
+              onClick={() => {
+                if (!user) { toast("Inicia sessão para controlar o bot", "error"); return; }
+                const next = !botPaused;
+                setBotPaused(next);
+                import("./firebase.js").then(({ saveSetting }) =>
+                  saveSetting(user.uid, "botControl", { paused: next, updatedAt: Date.now() }).catch(()=>{}));
+                toast(next ? "⏸ Bot pausado — sem novas entradas" : "▶ Bot retomado", next ? "warn" : "success");
+              }}
+              style={{
+                flexShrink:0, background: botPaused ? `${T.green}18` : `${T.gold}18`,
+                border:`1px solid ${botPaused ? T.green : T.gold}55`, color: botPaused ? T.green : T.gold,
+                borderRadius:8, padding:"7px 14px", fontSize:11, fontWeight:700, cursor:"pointer", fontFamily:"inherit", whiteSpace:"nowrap",
+              }}>
+              {botPaused ? "▶ Retomar" : "⏸ Pausar"}
+            </button>
             <span style={{ fontSize:9, color:T.muted }}>visto {Math.round((Date.now()-botStatus.lastSeen)/1000)}s atrás</span>
           </div>
         ) : (() => {
@@ -1988,33 +2026,32 @@ JSON: {"signals":[{"id":"btc","sinal":"COMPRAR|VENDER|AGUARDAR","razao":"1 frase
       toast(`⏸ Mercado de ${a?.sym || pos.assetId} fechado — não é possível vender agora`, "warn");
       return;
     }
+    // ── PAPER/REAL: a app NÃO fecha localmente — pede ao BOT (canal de comandos).
+    // O bot é a única autoridade de execução: vende na Alpaca e publica o estado.
+    // Fechar aqui marcava a posição como fechada na app enquanto continuava
+    // aberta na corretora (divergência app↔broker). Só sim fecha localmente.
+    if (!isSim) {
+      if (!user) { toast("Inicia sessão para enviar ordens ao bot", "error"); return; }
+      import("./firebase.js").then(({ sendCommand }) =>
+        sendCommand(user.uid, { type: "SELL", posId: pos.id, assetId: pos.assetId }).catch(() => {}));
+      toast(`📤 Pedido de venda de ${a?.sym || pos.assetId} enviado ao bot`, "sell");
+      return;
+    }
     const price = a?.price || pos.entryPrice;
     const feeRt = roundTripFeeFor(a?.cat, pos.amount);
     const pnl   = +(((price - pos.entryPrice) * pos.units) - feeRt).toFixed(4);
     const closedTrade = { ...pos, status: "MANUAL", closePrice: price, closedAt: new Date().toLocaleString("pt-PT"), closedTs: Date.now(), fee: feeRt, pnl };
-    if (isSim) {
-      setSimClosed(p => [closedTrade, ...p]);
-      setSimPositions(p => { const next = p.filter(x => x.id !== posId); simPosRef.current = next; return next; });
-      setSimBalance(b => {
-        const n = +(b + pos.amount + pnl).toFixed(2); simBalRef.current = n;
-        if (user) import("./firebase.js").then(({ updateTrade, saveSetting }) => {
-          updateTrade(user.uid, posId, { status: "MANUAL", closePrice: price, pnl, closedAt: closedTrade.closedAt }).catch(()=>{});
-          saveSetting(user.uid, "simBalance", n).catch(()=>{});
-        }).catch(()=>{});
-        return n;
-      });
-    } else {
-      setClosed(p => [closedTrade, ...p]);
-      setPositions(p => p.filter(x => x.id !== posId));
-      setBalance(b => {
-        const n = +(b + pos.amount + pnl).toFixed(2); balRef.current = n;
-        if (user) import("./firebase.js").then(({ updateTrade, saveSetting }) => {
-          updateTrade(user.uid, posId, { status: "MANUAL", closePrice: price, pnl, closedAt: closedTrade.closedAt }).catch(()=>{});
-          saveSetting(user.uid, "liveBalance", n).catch(()=>{});
-        }).catch(()=>{});
-        return n;
-      });
-    }
+    // (paper/real já saiu acima via comando ao bot — aqui é sempre sim)
+    setSimClosed(p => [closedTrade, ...p]);
+    setSimPositions(p => { const next = p.filter(x => x.id !== posId); simPosRef.current = next; return next; });
+    setSimBalance(b => {
+      const n = +(b + pos.amount + pnl).toFixed(2); simBalRef.current = n;
+      if (user) import("./firebase.js").then(({ updateTrade, saveSetting }) => {
+        updateTrade(user.uid, posId, { status: "MANUAL", closePrice: price, pnl, closedAt: closedTrade.closedAt }).catch(()=>{});
+        saveSetting(user.uid, "simBalance", n).catch(()=>{});
+      }).catch(()=>{});
+      return n;
+    });
     toast(`${pnl >= 0 ? "✅" : "🛑"} Vendido ${a?.sym} · P&L ${sign(pnl)}€${Math.abs(pnl).toFixed(2)}`, pnl >= 0 ? "success" : "warn");
   };
 
@@ -3275,11 +3312,30 @@ JSON: {"signals":[{"id":"btc","sinal":"COMPRAR|VENDER|AGUARDAR","razao":"1 frase
         )}
 
         {/* Arquivos diários (automáticos, criados pelo bot à meia-noite) */}
-        {histTab === "sim" && dailyArchives.length > 0 && (
+        {dailyArchives.length > 0 && (() => {
+          // O arquivo diário do bot mistura trades sim e live no mesmo dia. Aqui
+          // filtramos cada dia pelo modo do separador ativo (histTab) e
+          // recalculamos os totais (P&L, win rate, wins, count) só com esses
+          // trades. Antes, o arquivo só aparecia em "sim" → o histórico de paper
+          // desaparecia depois do arquivo da meia-noite. Agora aparece nos dois.
+          const wantMode = histTab === "sim" ? "sim" : "live";
+          const archForTab = dailyArchives
+            .map((a) => {
+              const trades = (Array.isArray(a.trades) ? a.trades : [])
+                .filter(t => (t.mode || "sim") === wantMode);
+              if (!trades.length) return null;
+              const pnl     = +trades.reduce((s, t) => s + (t.pnl || 0), 0).toFixed(2);
+              const wins    = trades.filter(t => (t.pnl || 0) > 0).length;
+              const winRate = +(wins / trades.length * 100).toFixed(1);
+              return { ...a, trades, count: trades.length, pnl, wins, winRate };
+            })
+            .filter(Boolean);
+          if (!archForTab.length) return null;
+          return (
           <Glass style={{ padding: "16px 18px" }}>
-            <div style={{ fontSize: 12, fontWeight: 700, marginBottom: 12 }}>🗓 Arquivo Diário ({dailyArchives.length} dias)</div>
+            <div style={{ fontSize: 12, fontWeight: 700, marginBottom: 12 }}>🗓 Arquivo Diário ({archForTab.length} dias)</div>
             <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-              {dailyArchives.map((a) => {
+              {archForTab.map((a) => {
                 const isOpen = histOpenDay === a.day;
                 const pnlPos = (a.pnl || 0) >= 0;
                 return (
@@ -3362,7 +3418,8 @@ JSON: {"signals":[{"id":"btc","sinal":"COMPRAR|VENDER|AGUARDAR","razao":"1 frase
               })}
             </div>
           </Glass>
-        )}
+          );
+        })()}
 
         {/* Trades table */}
         {filtered.length === 0 ? (
@@ -3863,9 +3920,12 @@ pm2 save && pm2 startup`}</CodeBlock>
   // RENDER: DEFINIÇÕES
   // ─────────────────────────────────────────────
   const Settings = () => {
-    const isSimTab = defTab === "sim";
-    const currentSettings      = isSimTab ? settings : liveSettings;
-    const setCurrentSettings   = isSimTab ? setSettings : setLiveSettings;
+    // defTab: "sim" | "paper" | "real"
+    const isSimTab  = defTab === "sim";
+    const isRealTab = defTab === "real";
+    const currentSettings    = isSimTab ? settings : isRealTab ? realSettings : paperSettings;
+    const setCurrentSettings = isSimTab ? setSettings : isRealTab ? setRealSettings : setPaperSettings;
+    const docKey             = isSimTab ? "settings" : isRealTab ? "realSettings" : "paperSettings";
     // local edit state vive no top-level (settingsLocal) para sobreviver ao re-render de 2s
     const brainDefaults = { aiBrain: false, aiBrainConfianca: 78, trailingStop: false, trailingStopPct: 4, aiExitOnFlip: true, aiSignalsMin: 15 };
     const local = { ...brainDefaults, ...(settingsLocal || currentSettings) };
@@ -3876,9 +3936,10 @@ pm2 save && pm2 startup`}</CodeBlock>
       });
     };
 
+    const settingsForTab = (tab) => tab === "sim" ? settings : tab === "real" ? realSettings : paperSettings;
     const switchTab = (tab) => {
       setDefTab(tab);
-      setSettingsLocal({ ...(tab === "sim" ? settings : liveSettings) });
+      setSettingsLocal({ ...settingsForTab(tab) });
     };
 
     const upd  = (k, v) => setLocal(p => ({ ...p, [k]: v }));
@@ -3889,13 +3950,13 @@ pm2 save && pm2 startup`}</CodeBlock>
     };
 
     const save = () => {
-      // Garantir que SL/TP correspondem ao perfil selecionado (a não ser que o user os tenha alterado manualmente)
       const finalSettings = { ...local };
       setCurrentSettings(finalSettings);
       setSettingsLocal(null);
       if (user) import("./firebase.js").then(({ saveSetting }) =>
-        saveSetting(user.uid, isSimTab ? "settings" : "liveSettings", finalSettings).catch(()=>{}));
-      toast(`✅ Definições ${isSimTab?"simulação":"live"} guardadas! (Perfil ${finalSettings.riscoPerfil}: SL ${finalSettings.stopLossPadrao}% / TP ${finalSettings.takeProfitPadrao}%)`, "success");
+        saveSetting(user.uid, docKey, finalSettings).catch(()=>{}));
+      const nomeTab = isSimTab ? "simulação" : isRealTab ? "REAL" : "paper";
+      toast(`✅ Definições ${nomeTab} guardadas! (Perfil ${finalSettings.riscoPerfil}: SL ${finalSettings.stopLossPadrao}% / TP ${finalSettings.takeProfitPadrao}%)`, "success");
     };
     const info = perfilInfo[local.riscoPerfil];
     const amountPreview = local.modoValor === "fixo"
@@ -3907,11 +3968,11 @@ pm2 save && pm2 startup`}</CodeBlock>
 
         {/* Mode tabs */}
         <div style={{ display: "flex", gap: 0, background: "rgba(0,0,0,0.3)", borderRadius: 10, overflow: "hidden", width: "fit-content" }}>
-          {[["sim","◎ Simulação"], ["live", botModoReal ? "● Live (Real)" : "📝 Paper"]].map(([id, label]) => (
+          {[["sim","◎ Simulação", T.gold], ["paper","📝 Paper", T.blue], ["real","● Real", T.red]].map(([id, label, col]) => (
             <button key={id} onClick={() => switchTab(id)} style={{
-              padding: "10px 24px", fontSize: 13, fontWeight: 700, cursor: "pointer",
-              background: defTab===id ? (id==="sim"?`${T.gold}20`:`${T.red}20`) : "transparent",
-              color: defTab===id ? (id==="sim"?T.gold:T.red) : T.muted,
+              padding: "10px 22px", fontSize: 13, fontWeight: 700, cursor: "pointer",
+              background: defTab===id ? `${col}20` : "transparent",
+              color: defTab===id ? col : T.muted,
               border: "none", fontFamily: "inherit",
             }}>{label}</button>
           ))}
@@ -3922,9 +3983,14 @@ pm2 save && pm2 startup`}</CodeBlock>
             ◎ Estas definições aplicam-se apenas à simulação — para praticar sem risco.
           </div>
         )}
-        {!isSimTab && (
-          <div style={{ background: `${T.red}0a`, border: `1px solid ${T.red}25`, borderRadius: 10, padding: "10px 16px", fontSize: 11, color: T.muted }}>
-            ⚠ Estas definições aplicam-se ao modo {botModoReal ? "LIVE — trades com dinheiro real na Alpaca" : "PAPER — trades fictícios na Alpaca"}.
+        {defTab === "paper" && (
+          <div style={{ background: `${T.blue}0a`, border: `1px solid ${T.blue}25`, borderRadius: 10, padding: "10px 16px", fontSize: 11, color: T.muted }}>
+            📝 Estas definições aplicam-se ao modo PAPER — trades fictícios na Alpaca. O bot usa-as quando arranca com MODE=paper.
+          </div>
+        )}
+        {isRealTab && (
+          <div style={{ background: `${T.red}12`, border: `1px solid ${T.red}40`, borderRadius: 10, padding: "10px 16px", fontSize: 11, color: T.text }}>
+            ⚠ <b>DINHEIRO REAL.</b> Estas definições aplicam-se ao modo REAL na Alpaca. O bot só as usa quando arranca com MODE=real. Por defeito são mais conservadoras (teto e nº de posições baixos) — revê antes de ativar real.
           </div>
         )}
 
@@ -4247,6 +4313,29 @@ pm2 save && pm2 startup`}</CodeBlock>
                 </div>
               </div>
             </div>
+          </div>
+
+          {/* Take-profit parcial (scale-out) */}
+          <div style={{ background: "rgba(0,0,0,0.18)", borderRadius: 10, padding: "16px 18px", marginTop: 14 }}>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+              <div>
+                <div style={{ fontSize: 12, fontWeight: 700 }}>📊 Take-profit parcial — deixar correr</div>
+                <div style={{ fontSize: 10, color: T.muted, marginTop: 2 }}>Ao atingir o TP, vende uma parte e deixa o resto correr com o stop em break-even. Captura lucro mas mantém o potencial. Só cripto.</div>
+              </div>
+              <div onClick={() => upd("scaleOutTP", !local.scaleOutTP)} style={{ cursor: "pointer", flexShrink: 0 }}>
+                <div style={{ width: 44, height: 24, borderRadius: 12, background: local.scaleOutTP ? T.green : "rgba(255,255,255,0.1)", position: "relative", transition: "all 0.2s" }}>
+                  <div style={{ position: "absolute", top: 3, left: local.scaleOutTP ? 22 : 2, width: 18, height: 18, borderRadius: "50%", background: "#fff", transition: "left 0.2s" }} />
+                </div>
+              </div>
+            </div>
+            {local.scaleOutTP && (
+              <div style={{ marginTop: 14 }}>
+                <div style={{ fontSize: 11, color: T.muted, marginBottom: 6 }}>Vender no TP: <b style={{ color: T.green }}>{local.scaleOutPct ?? 50}%</b> · o resto corre</div>
+                <input type="range" min={10} max={90} step={10} value={local.scaleOutPct ?? 50}
+                  onChange={e => upd("scaleOutPct", +e.target.value)}
+                  style={{ width: "100%", accentColor: T.green }} />
+              </div>
+            )}
           </div>
 
           {/* Intervalo dos sinais AI — controla o consumo de tokens da Groq */}
@@ -5072,7 +5161,7 @@ JSON puro:
       });
     }).catch(() => {});
     // Carregar estratégias guardadas
-    let unsubStrat = null, unsubSettings = null, unsubLive = null, unsubArch = null, unsubDt = null, unsubBot = null, unsubSig = null, unsubDaily = null, unsubBrokers = null;
+    let unsubStrat = null, unsubSettings = null, unsubLive = null, unsubLiveLegacy = null, unsubReal = null, unsubCtrl = null, unsubArch = null, unsubDt = null, unsubBot = null, unsubSig = null, unsubDaily = null, unsubBrokers = null;
     import("./firebase.js").then(({ subscribeStrategies, subscribeSetting: subSet, subscribeArchives }) => {
       if (subscribeArchives) {
         unsubDaily = subscribeArchives(uid2, (arcs) => {
@@ -5107,8 +5196,22 @@ JSON puro:
           if (typeof val.capitalTotal === "number") { setSimCapital(val.capitalTotal); }
         }
       });
-      unsubLive = subSet(uid2, "liveSettings", (val) => {
-        if (val && typeof val === "object") { setLiveSettings(val); liveSettingsRef.current = val; }
+      unsubLive = subSet(uid2, "paperSettings", (val) => {
+        if (val && typeof val === "object") { setPaperSettings(val); paperSettingsRef.current = val; paperLoadedRef.current = true; }
+      });
+      // Migração suave (uma vez): se NUNCA houve paperSettings guardado mas
+      // existe o antigo "liveSettings", adota-o como base de paper. Assim não
+      // perdes as definições que já tinhas no separador Paper.
+      unsubLiveLegacy = subSet(uid2, "liveSettings", (val) => {
+        if (val && typeof val === "object" && !paperLoadedRef.current) {
+          setPaperSettings(val); paperSettingsRef.current = val;
+        }
+      });
+      unsubReal = subSet(uid2, "realSettings", (val) => {
+        if (val && typeof val === "object") { setRealSettings(val); realSettingsRef.current = val; }
+      });
+      unsubCtrl = subSet(uid2, "botControl", (val) => {
+        if (val && typeof val === "object") setBotPaused(!!val.paused);
       });
       unsubArch = subSet(uid2, "archivedSims", (val) => {
         if (Array.isArray(val)) setArchivedSims(val);
@@ -5140,7 +5243,7 @@ JSON puro:
         if (val && typeof val === "object" && botActiveRef.current) setMarketSignals(val);
       });
     }).catch(() => {});
-    return () => { unsubTrades?.(); unsubBal?.(); unsubBalLive?.(); unsubTradeable?.(); unsubStrat?.(); unsubSettings?.(); unsubLive?.(); unsubArch?.(); unsubDt?.(); unsubBot?.(); unsubSig?.(); unsubDaily?.(); unsubBrokers?.(); };
+    return () => { unsubTrades?.(); unsubBal?.(); unsubBalLive?.(); unsubTradeable?.(); unsubStrat?.(); unsubSettings?.(); unsubLive?.(); unsubLiveLegacy?.(); unsubReal?.(); unsubCtrl?.(); unsubArch?.(); unsubDt?.(); unsubBot?.(); unsubSig?.(); unsubDaily?.(); unsubBrokers?.(); };
   }, [user]);
 
   // ── Persistência: guardar trade quando aberto ─────────────────────────────
