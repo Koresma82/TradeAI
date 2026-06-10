@@ -479,6 +479,9 @@ export default function TradeAI() {
   // A app só tinha sim/live; o bot publica o modo verdadeiro no heartbeat.
   const botModoReal  = botStatus?.mode === "real";
   const botModoPaper = botStatus?.mode === "paper";
+  // Rótulo claro e único para qualquer modo do bot — evita mostrar "LIVE"
+  // genérico que confunde paper com real. Usar em todo o lado.
+  const modoLabelBot = (m) => m === "real" ? "DINHEIRO REAL" : m === "paper" ? "Paper" : m === "sim" ? "Simulação" : "—";
   useEffect(() => { botActiveRef.current = botAtivo; }, [botAtivo]);
   useEffect(() => { stratRef.current = strategies; }, [strategies]);
   useEffect(() => { posRef.current = positions; }, [positions]);
@@ -1032,7 +1035,7 @@ JSON puro — inclui TODOS os ativos relevantes de TODAS as categorias:
             : seenMs < 90000      ? `${Math.round(seenMs/1000)}s`
             : seenMs < 3600000    ? `${Math.round(seenMs/60000)} min`
             : `${Math.round(seenMs/3600000)}h`;
-          const modeTxt  = simMode ? "Simulação" : "LIVE";
+          const modeTxt  = simMode ? "Simulação" : (botModoReal ? "DINHEIRO REAL" : "Paper");
 
           let titulo, detalhe;
           if (!botStatus) {
@@ -1041,8 +1044,8 @@ JSON puro — inclui TODOS os ativos relevantes de TODAS as categorias:
             detalhe = "A app ainda não viu nenhum heartbeat do bot. Causas comuns: o USER_UID no Railway não é igual ao teu (Definições → Copiar UID), o deploy falhou, ou falta o FIREBASE_ADMIN_JSON. Confirma os Deploy Logs no Railway.";
           } else if (botHeartbeatRecente && !botModoBate) {
             // Bot vivo mas noutro modo
-            titulo  = `Bot ativo em ${botStatus.mode === "sim" ? "Simulação" : "LIVE"}, mas estás em ${modeTxt}`;
-            detalhe = `O bot está a operar em modo ${botStatus.mode === "sim" ? "Simulação" : "LIVE"}. Muda o toggle no topo para ${botStatus.mode === "sim" ? "Simulação" : "LIVE"} para o veres a gerir as posições aqui.`;
+            titulo  = `Bot ativo em ${modoLabelBot(botStatus.mode)}, mas estás em ${modeTxt}`;
+            detalhe = `O bot está a operar em modo ${modoLabelBot(botStatus.mode)}. Muda o toggle no topo para ${botStatus.mode === "sim" ? "Simulação" : "Live"} para o veres a gerir as posições aqui.`;
           } else {
             // Recebeu antes, mas o heartbeat está velho → parou/crashou
             titulo  = `Bot 24/7 offline — sem sinal há ${agoTxt}`;
@@ -4498,22 +4501,25 @@ JSON puro:
 
     // Fechar trade day trading manualmente
     const closeDtTrade = (tradeId) => {
+      // PAPER/REAL: pede ao bot para vender — a app não fecha localmente.
+      if (!simMode) {
+        const t = dtTrades.find(x => x.id === tradeId);
+        if (!user || !t) { toast("Inicia sessão para enviar ordens ao bot", "error"); return; }
+        import("./firebase.js").then(({ sendCommand }) =>
+          sendCommand(user.uid, { type: "SELL", posId: t.id, assetId: t.assetId }).catch(()=>{}));
+        toast(`📤 Pedido de venda de ${t.assetSym} enviado ao bot`, "sell");
+        return;
+      }
       setDtTrades(p => p.map(t => {
         if (t.id !== tradeId || t.status !== "ABERTA") return t;
         const a    = resolveAsset(t);
         const price = a?.price || mktData[a?.id]?.price || t.entryPrice;
         const pnl  = (price - t.entryPrice) * t.units;
         setDtDailyPnl(prev => +(prev + pnl).toFixed(2));
-        // Fechar na posições
-        if (simMode) {
-          setSimPositions(prev => prev.filter(x => x.id !== tradeId));
-          setSimClosed(prev => [{ ...t, status: "MANUAL", closePrice: price, pnl, closedAt: new Date().toLocaleString("pt-PT"), closedTs: Date.now() }, ...prev]);
-          setSimBalance(b => { const n = +(b + t.amount + pnl).toFixed(2); simBalRef.current = n; return n; });
-        } else {
-          setPositions(prev => prev.filter(x => x.id !== tradeId));
-          setClosed(prev => [{ ...t, status: "MANUAL", closePrice: price, pnl, closedAt: new Date().toLocaleString("pt-PT"), closedTs: Date.now() }, ...prev]);
-          setBalance(b => { const n = +(b + t.amount + pnl).toFixed(2); balRef.current = n; return n; });
-        }
+        // Fechar nas posições (só sim — live é tratado acima via comando)
+        setSimPositions(prev => prev.filter(x => x.id !== tradeId));
+        setSimClosed(prev => [{ ...t, status: "MANUAL", closePrice: price, pnl, closedAt: new Date().toLocaleString("pt-PT"), closedTs: Date.now() }, ...prev]);
+        setSimBalance(b => { const n = +(b + t.amount + pnl).toFixed(2); simBalRef.current = n; return n; });
         toast(`${pnl>=0?"✅":"🛑"} DayTrade fechado: ${sign(pnl)}€${Math.abs(pnl).toFixed(2)}`, pnl>=0?"success":"warn");
         return { ...t, status: "FECHADO", closePrice: price, pnl };
       }));
@@ -4888,7 +4894,7 @@ JSON puro:
             }} />
             <span style={{ fontSize: 12, fontWeight: 700, color: botAtivo ? T.green : T.red }}>
               {botAtivo
-                ? `Bot ativo${botStatus?.mode ? ` · ${botStatus.mode === "sim" ? "Simulação" : "LIVE"}` : ""}`
+                ? `Bot ativo${botStatus?.mode ? ` · ${modoLabelBot(botStatus.mode)}` : ""}`
                 : "Bot offline"}
             </span>
           </div>
@@ -5223,20 +5229,21 @@ JSON puro:
             onClick={(e) => {
               e.stopPropagation();
               if (simMode) {
+                const indoReal = botModoReal; // o bot está mesmo em dinheiro real?
                 setConfirmModal({
-                  danger: true,
-                  title: "Ativar modo LIVE?",
-                  message: "Em modo LIVE os trades são executados com dinheiro REAL na tua corretora.",
-                  lines: [
-                    "Precisas da corretora (Alpaca/IBKR) configurada e com saldo",
-                    "Perdas em modo LIVE são dinheiro real perdido",
-                    "Podes voltar a Simulação a qualquer momento",
-                  ],
-                  confirmLabel: "Ativar LIVE",
+                  danger: indoReal,
+                  title: indoReal ? "Ativar modo DINHEIRO REAL?" : "Ativar modo Live (Paper)?",
+                  message: indoReal
+                    ? "O bot está em modo REAL. Os trades são executados com dinheiro REAL na tua corretora."
+                    : "O bot está em modo PAPER (dinheiro fictício na Alpaca). Vais ver e controlar as posições de paper — não é dinheiro real.",
+                  lines: indoReal
+                    ? ["Perdas em modo REAL são dinheiro real perdido", "Confirma que é mesmo isto que queres", "Podes voltar a Simulação a qualquer momento"]
+                    : ["É paper trading — dinheiro fictício, sem risco real", "Serve para validar antes do dinheiro a sério", "Podes voltar a Simulação a qualquer momento"],
+                  confirmLabel: indoReal ? "Ativar DINHEIRO REAL" : "Ativar Paper",
                   onConfirm: () => {
                     setSimMode(false);
                     simModeRef.current = false;
-                    toast("● Modo LIVE ativado — dinheiro real", "warn");
+                    toast(indoReal ? "● Modo REAL ativado — dinheiro real" : "📝 Modo Paper ativado — dinheiro fictício", indoReal ? "warn" : "success");
                   },
                 });
               } else {
@@ -5268,7 +5275,7 @@ JSON puro:
               color: !simMode ? T.red : T.muted,
               transition: "all 0.2s",
             }}>
-              ● LIVE
+              {botModoReal ? "● REAL" : botModoPaper ? "● PAPER" : "● LIVE"}
             </div>
           </div>
           {!simMode && (
