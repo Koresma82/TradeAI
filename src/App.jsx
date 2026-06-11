@@ -302,15 +302,17 @@ export default function TradeAI() {
   // certo conforme o MODE em que arranca (settings / paperSettings / realSettings
   // no Firestore). Real começa conservador por defeito (proteção de capital).
   const CAT_AJUSTE_DEFAULT = { Crypto: 1.5, Commodity: 1.0, ETF: 0.7, Forex: 0.4, "Ação": 1.1 };
+  const PER_ORIGEM_DEFAULT = { estrategias: { valorFixo: 0, maxValorTrade: 0 }, aibrain: { valorFixo: 0, maxValorTrade: 0 }, daytrading: { valorFixo: 0, maxValorTrade: 0 }, manual: { valorFixo: 0, maxValorTrade: 0 } };
   const PAPER_DEFAULTS = { capitalTotal: 1000, modoValor: "percentagem", valorFixo: 50,
     percentagem: 3, riscoPerfil: "moderado",
     maxPosicoesAbertas: 5, stopLossPadrao: 6, takeProfitPadrao: 12, autoInvestir: false,
-    catAjuste: { ...CAT_AJUSTE_DEFAULT } };
+    maxValorTrade: 100, maxPosicoesTotal: 40, maxAiBrain: 3,
+    catAjuste: { ...CAT_AJUSTE_DEFAULT }, perOrigem: JSON.parse(JSON.stringify(PER_ORIGEM_DEFAULT)) };
   const REAL_DEFAULTS  = { capitalTotal: 1000, modoValor: "fixo", valorFixo: 25,
     percentagem: 2, riscoPerfil: "conservador",
     maxPosicoesAbertas: 3, stopLossPadrao: 5, takeProfitPadrao: 10, autoInvestir: false,
-    maxValorTrade: 50, maxPosicoesTotal: 10,
-    catAjuste: { ...CAT_AJUSTE_DEFAULT } };
+    maxValorTrade: 50, maxPosicoesTotal: 10, maxAiBrain: 2,
+    catAjuste: { ...CAT_AJUSTE_DEFAULT }, perOrigem: JSON.parse(JSON.stringify(PER_ORIGEM_DEFAULT)) };
   const [paperSettings, setPaperSettings] = useState({ ...PAPER_DEFAULTS });
   const [realSettings,  setRealSettings]  = useState({ ...REAL_DEFAULTS });
   const paperSettingsRef = useRef({ ...PAPER_DEFAULTS });
@@ -400,6 +402,7 @@ export default function TradeAI() {
     maxPosicoesAbertas:  5,
     maxManuais:          5,
     maxEstrategias:      5,
+    maxAiBrain:          3,
     maxDayTrading:       5,
     maxValorTrade:       100,   // teto € por trade (enviado ao bot)
     maxPosicoesTotal:    40,    // limite global de posições abertas (enviado ao bot)
@@ -415,6 +418,7 @@ export default function TradeAI() {
     aiExitOnFlip:        true,   // sair quando a IA muda de COMPRAR para VENDER
     aiSignalsMin:        15,     // intervalo (min) entre análises AI do bot — poupa tokens
     catAjuste:           { Crypto: 1.5, Commodity: 1.0, ETF: 0.7, Forex: 0.4, "Ação": 1.1 }, // multiplicador de SL/TP/queda por categoria
+    perOrigem:           { estrategias: { valorFixo: 0, maxValorTrade: 0 }, aibrain: { valorFixo: 0, maxValorTrade: 0 }, daytrading: { valorFixo: 0, maxValorTrade: 0 }, manual: { valorFixo: 0, maxValorTrade: 0 } },
   });
   const balRef    = useRef(INIT_BAL);
   const stratRef  = useRef([]);
@@ -705,7 +709,7 @@ export default function TradeAI() {
         if (simRunning) {
           const maxStrat = settingsRef.current?.maxEstrategias ?? 5;
           const stratOpen = (isSim ? simPosRef.current : posRef.current)
-            .filter(p => p.stratId && p.stratId !== "manual" && p.stratId !== "daytrading").length;
+            .filter(p => p.stratId && p.stratId !== "manual" && p.stratId !== "daytrading" && p.stratId !== "ai-brain").length;
           let openedThisTick = 0;
           stratRef.current.filter(s => s.ativo).forEach(s => {
             s.ativos.forEach(aid => {
@@ -757,7 +761,7 @@ export default function TradeAI() {
         //    Respeita o mesmo gate de "simRunning" e o limite de posições de estratégia.
         if (simRunning && cfg.aiBrain) {
           const minConf  = cfg.aiBrainConfianca || 78;
-          const maxStrat = cfg.maxEstrategias ?? 5;
+          const maxBrain = cfg.maxAiBrain ?? 3;
           const poolNow  = isSim ? simPosRef.current : posRef.current;
           const brainOpen = poolNow.filter(p => p.stratId === "ai-brain").length;
           const perTrade  = calcTradeAmount();
@@ -770,7 +774,7 @@ export default function TradeAI() {
             if ((cds.current[key] || 0) > 0) { cds.current[key]--; return; }
             // não duplicar posição no mesmo ativo
             if (poolNow.some(p => p.assetId === sg.id && p.stratId === "ai-brain")) return;
-            if (brainOpen + openedBrain >= maxStrat) return;
+            if (brainOpen + openedBrain >= maxBrain) return;
             if (balRefCur.current < perTrade) return;
             const slPct = cfg.stopLossPadrao || 6;
             const tpPct = cfg.takeProfitPadrao || 12;
@@ -2037,6 +2041,27 @@ JSON: {"signals":[{"id":"btc","sinal":"COMPRAR|VENDER|AGUARDAR","razao":"1 frase
     return () => clearInterval(iv);
   }, [fetchMarkets]);
 
+  // Envia um comando ao bot E segue o resultado, dando feedback ao utilizador.
+  // Resolve o problema de "enviei e não aconteceu nada" — agora há toast de
+  // confirmação ou de recusa com a razão (ex.: sem preço de mercado atual).
+  const cmdToBot = (payload, sentMsg) => {
+    if (!user) { toast("Inicia sessão para enviar ordens ao bot", "error"); return; }
+    if (sentMsg) toast(sentMsg, payload.type === "SELL" ? "sell" : "info");
+    import("./firebase.js").then(({ sendCommand, watchCommand }) => {
+      sendCommand(user.uid, payload).then(id => {
+        watchCommand(user.uid, id, ({ status, reason }) => {
+          if (status === "FEITO") {
+            toast(`✅ Bot executou: ${payload.type === "BUY" ? "compra" : "venda"} de ${payload.assetId?.toUpperCase?.() || ""}`.trim(), "success");
+          } else if (status === "TIMEOUT") {
+            toast("⏳ O bot não confirmou a tempo — verifica se está online", "warn");
+          } else {
+            toast(`🚫 Ordem recusada pelo bot${reason ? `: ${reason}` : ""}`, "error");
+          }
+        });
+      }).catch(() => toast("Falha ao enviar a ordem ao bot", "error"));
+    });
+  };
+
   // Fechar qualquer posição aberta pelo seu id (usado pelos botões "Vender" no Dashboard)
   const closePositionById = (posId) => {
     const isSim = simModeRef.current;
@@ -2054,10 +2079,8 @@ JSON: {"signals":[{"id":"btc","sinal":"COMPRAR|VENDER|AGUARDAR","razao":"1 frase
     // Fechar aqui marcava a posição como fechada na app enquanto continuava
     // aberta na corretora (divergência app↔broker). Só sim fecha localmente.
     if (!isSim) {
-      if (!user) { toast("Inicia sessão para enviar ordens ao bot", "error"); return; }
-      import("./firebase.js").then(({ sendCommand }) =>
-        sendCommand(user.uid, { type: "SELL", posId: pos.id, assetId: pos.assetId }).catch(() => {}));
-      toast(`📤 Pedido de venda de ${a?.sym || pos.assetId} enviado ao bot`, "sell");
+      cmdToBot({ type: "SELL", posId: pos.id, assetId: pos.assetId },
+        `📤 Pedido de venda de ${a?.sym || pos.assetId} enviado ao bot`);
       return;
     }
     const price = a?.price || pos.entryPrice;
@@ -2096,15 +2119,11 @@ JSON: {"signals":[{"id":"btc","sinal":"COMPRAR|VENDER|AGUARDAR","razao":"1 frase
     if (!isSim) {
       if (!user) { toast("Precisas de sessão iniciada para enviar ordens ao bot", "error"); setOrderModal(null); return; }
       if (side === "BUY") {
-        import("./firebase.js").then(({ sendCommand }) =>
-          sendCommand(user.uid, { type: "BUY", assetId, amount }).catch(() => {}));
-        toast(`📤 Ordem de COMPRA de ${a?.sym} (€${amount}) enviada ao bot`, "buy");
+        cmdToBot({ type: "BUY", assetId, amount }, `📤 Ordem de COMPRA de ${a?.sym} (€${amount}) enviada ao bot`);
       } else {
         const openPos = positions.find(p => p.assetId === assetId);
         if (!openPos) { toast(`Sem posição aberta em ${a?.sym} para vender`, "warn"); setOrderModal(null); return; }
-        import("./firebase.js").then(({ sendCommand }) =>
-          sendCommand(user.uid, { type: "SELL", posId: openPos.id, assetId }).catch(() => {}));
-        toast(`📤 Ordem de VENDA de ${a?.sym} enviada ao bot`, "sell");
+        cmdToBot({ type: "SELL", posId: openPos.id, assetId }, `📤 Ordem de VENDA de ${a?.sym} enviada ao bot`);
       }
       setOrderModal(null);
       return;
@@ -3581,10 +3600,8 @@ JSON: {"signals":[{"id":"btc","sinal":"COMPRAR|VENDER|AGUARDAR","razao":"1 frase
                               {isOpen && !simMode && (
                                 <button
                                   onClick={() => {
-                                    if (!user) { toast("Inicia sessão para enviar ordens ao bot", "error"); return; }
-                                    import("./firebase.js").then(({ sendCommand }) =>
-                                      sendCommand(user.uid, { type: "SELL", posId: t.id, assetId: t.assetId }).catch(()=>{}));
-                                    toast(`📤 Pedido de venda de ${t.assetSym} enviado ao bot`, "sell");
+                                    cmdToBot({ type: "SELL", posId: t.id, assetId: t.assetId },
+                                      `📤 Pedido de venda de ${t.assetSym} enviado ao bot`);
                                   }}
                                   title="Pedir ao bot para vender esta posição"
                                   style={{ background: `${T.red}18`, border: `1px solid ${T.red}44`, color: T.red, borderRadius: 6, padding: "3px 8px", fontSize: 9, fontWeight: 700, cursor: "pointer", fontFamily: "inherit", whiteSpace: "nowrap" }}
@@ -4077,7 +4094,7 @@ pm2 save && pm2 startup`}</CodeBlock>
               ) : (
                 <>• Valor fixo de <b style={{ color: T.text }}>€{local.valorFixo}</b> por trade.<br/></>
               )}
-              • Nunca acima do teto: <b style={{ color: (local.maxValorTrade ?? 100) > 0 ? T.gold : T.text }}>{(local.maxValorTrade ?? 100) > 0 ? `€${local.maxValorTrade}` : "sem teto"}</b> por trade <span style={{ opacity: 0.7 }}>(em Limites de Segurança)</span>.<br/>
+              • Nunca acima do teto: <b style={{ color: (local.maxValorTrade ?? 100) > 0 ? T.gold : T.text }}>{(local.maxValorTrade ?? 100) > 0 ? `€${local.maxValorTrade ?? 100}` : "sem teto"}</b> por trade <span style={{ opacity: 0.7 }}>(em Limites de Segurança)</span>.<br/>
               • Mínimo de <b style={{ color: T.text }}>€10</b> por trade.<br/>
               • <b style={{ color: T.green }}>Só fecha em lucro</b> se este cobrir as comissões (cripto ~0,5% ida-volta) + margem — evita "ganhos" que na verdade dão prejuízo.
             </div>
@@ -4164,24 +4181,68 @@ pm2 save && pm2 startup`}</CodeBlock>
           })}
         </Glass>
 
+        {/* Valor e teto por origem */}
+        <Glass style={{ padding: "22px 24px" }}>
+          <div style={{ fontSize: 13, fontWeight: 700, color: T.aLight, marginBottom: 6 }}>💶 Valor e Teto por Origem</div>
+          <div style={{ fontSize: 11, color: T.muted, marginBottom: 16, lineHeight: 1.6 }}>
+            Define o valor (€) e o teto (€) por trade de cada origem. <b>0 = herda o global</b> (valor fixo €{local.valorFixo ?? 50} · teto €{local.maxValorTrade ?? 100}).
+            Permite, por ex., estratégias €50, Cérebro AI €30, day-trade €20.
+          </div>
+          {[
+            { k: "estrategias", l: "🎯 Estratégias", c: T.blue },
+            { k: "aibrain",     l: "🤖 Cérebro AI",  c: T.accent },
+            { k: "daytrading",  l: "⚡ Day Trading",  c: T.gold },
+            { k: "manual",      l: "✋ Manuais",      c: T.muted },
+          ].map(({ k, l, c }) => {
+            const po = (local.perOrigem || {})[k] || { valorFixo: 0, maxValorTrade: 0 };
+            const setPO = (field, v) => setLocal(prev => {
+              const base = prev.perOrigem || {};
+              const cur  = base[k] || { valorFixo: 0, maxValorTrade: 0 };
+              return { ...prev, perOrigem: { ...base, [k]: { ...cur, [field]: v } } };
+            });
+            return (
+              <div key={k} style={{ padding: "12px 0", borderBottom: `1px solid ${T.border}` }}>
+                <div style={{ fontSize: 12, fontWeight: 700, color: c, marginBottom: 8 }}>{l}</div>
+                <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 16 }}>
+                  <div>
+                    <div style={{ fontSize: 9, color: T.muted, marginBottom: 4 }}>VALOR €/TRADE {po.valorFixo > 0 ? "" : "(global)"}</div>
+                    <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                      <input type="range" min={0} max={500} step={5} value={po.valorFixo || 0} onChange={e => setPO("valorFixo", +e.target.value)} style={{ flex: 1, accentColor: c }} />
+                      <div style={{ fontSize: 13, fontWeight: 700, color: po.valorFixo > 0 ? c : T.muted, minWidth: 52, textAlign: "right" }}>{po.valorFixo > 0 ? `€${po.valorFixo}` : "auto"}</div>
+                    </div>
+                  </div>
+                  <div>
+                    <div style={{ fontSize: 9, color: T.muted, marginBottom: 4 }}>TETO €/TRADE {po.maxValorTrade > 0 ? "" : "(global)"}</div>
+                    <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                      <input type="range" min={0} max={1000} step={10} value={po.maxValorTrade || 0} onChange={e => setPO("maxValorTrade", +e.target.value)} style={{ flex: 1, accentColor: c }} />
+                      <div style={{ fontSize: 13, fontWeight: 700, color: po.maxValorTrade > 0 ? c : T.muted, minWidth: 52, textAlign: "right" }}>{po.maxValorTrade > 0 ? `€${po.maxValorTrade}` : "global"}</div>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            );
+          })}
+        </Glass>
+
         {/* Limites */}
         <Glass style={{ padding: "22px 24px" }}>
           <div style={{ fontSize: 13, fontWeight: 700, color: T.aLight, marginBottom: 6 }}>🔒 Limites de Segurança</div>
           <div style={{ fontSize: 11, color: T.muted, marginBottom: 16, lineHeight: 1.6 }}>Proteções automáticas. O bot para se estes limites forem atingidos.</div>
           {/* Limites de posições por tipo */}
           <div style={{ fontSize: 11, color: T.aLight, fontWeight: 700, marginBottom: 10 }}>Máximo de posições abertas por tipo</div>
-          <div className="resp-grid" style={{ display: "grid", gridTemplateColumns: "repeat(3,1fr)", gap: 12, marginBottom: 16 }}>
+          <div className="resp-grid" style={{ display: "grid", gridTemplateColumns: "repeat(2,1fr)", gap: 12, marginBottom: 16 }}>
             {[
-              { k: "maxManuais",     l: "✋ Manuais",     desc: "Compras tuas em Mercados", max: 20 },
-              { k: "maxEstrategias", l: "🎯 Estratégias", desc: "Trades automáticos do bot", max: 20 },
-              { k: "maxDayTrading",  l: "⚡ Day Trading",  desc: "Scalping rápido", max: 50 },
+              { k: "maxManuais",     l: "✋ Manuais",     desc: "Compras tuas em Mercados", max: 20, def: 5 },
+              { k: "maxEstrategias", l: "🎯 Estratégias", desc: "Trades automáticos das estratégias", max: 20, def: 5 },
+              { k: "maxAiBrain",     l: "🤖 Cérebro AI",  desc: "Posições abertas pela IA (separado das estratégias)", max: 15, def: 3 },
+              { k: "maxDayTrading",  l: "⚡ Day Trading",  desc: "Scalping rápido", max: 50, def: 5 },
             ].map(f => (
               <div key={f.k} style={{ background: "rgba(0,0,0,0.18)", borderRadius: 10, padding: "14px 16px" }}>
                 <div style={{ fontSize: 11, fontWeight: 600, marginBottom: 3 }}>{f.l}</div>
                 <div style={{ fontSize: 9, color: T.muted, marginBottom: 10, lineHeight: 1.4 }}>{f.desc}</div>
                 <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-                  <input type="range" min={1} max={f.max} value={local[f.k] ?? 5} onChange={e => upd(f.k, +e.target.value)} style={{ flex: 1, accentColor: T.accent }} />
-                  <div style={{ fontSize: 16, fontWeight: 700, color: T.aLight, minWidth: 24, textAlign: "right" }}>{local[f.k] ?? 5}</div>
+                  <input type="range" min={1} max={f.max} value={local[f.k] ?? f.def} onChange={e => upd(f.k, +e.target.value)} style={{ flex: 1, accentColor: T.accent }} />
+                  <div style={{ fontSize: 16, fontWeight: 700, color: T.aLight, minWidth: 24, textAlign: "right" }}>{local[f.k] ?? f.def}</div>
                 </div>
               </div>
             ))}
@@ -4660,10 +4721,9 @@ JSON puro:
       // PAPER/REAL: pede ao bot para vender — a app não fecha localmente.
       if (!simMode) {
         const t = dtTrades.find(x => x.id === tradeId);
-        if (!user || !t) { toast("Inicia sessão para enviar ordens ao bot", "error"); return; }
-        import("./firebase.js").then(({ sendCommand }) =>
-          sendCommand(user.uid, { type: "SELL", posId: t.id, assetId: t.assetId }).catch(()=>{}));
-        toast(`📤 Pedido de venda de ${t.assetSym} enviado ao bot`, "sell");
+        if (!t) { toast("Posição já não existe", "warn"); return; }
+        cmdToBot({ type: "SELL", posId: t.id, assetId: t.assetId },
+          `📤 Pedido de venda de ${t.assetSym} enviado ao bot`);
         return;
       }
       setDtTrades(p => p.map(t => {
@@ -4873,10 +4933,8 @@ JSON puro:
                         const price2 = mktData[a?.id]?.price || a?.price || op.entrada;
                         // PAPER/REAL: pede ao bot; não cria posição local.
                         if (!simMode) {
-                          if (!user) { toast("Inicia sessão para enviar ordens ao bot", "error"); return; }
-                          import("./firebase.js").then(({ sendCommand }) =>
-                            sendCommand(user.uid, { type: "BUY", assetId: a?.id || op.id, amount: dtAmount }).catch(()=>{}));
-                          toast(`📤 Compra de ${op.nome} (€${dtAmount}) enviada ao bot`, "buy");
+                          cmdToBot({ type: "BUY", assetId: a?.id || op.id, amount: dtAmount },
+                            `📤 Compra de ${op.nome} (€${dtAmount}) enviada ao bot`);
                           return;
                         }
                         const units2 = +(dtAmount / price2).toFixed(7);

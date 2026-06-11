@@ -82,6 +82,25 @@ export async function sendCommand(uid, command) {
   });
   return id;
 }
+// Segue um comando específico até o bot o resolver (FEITO/FALHOU). Chama o
+// callback com o estado e cancela-se sozinho após um timeout (o bot pode estar
+// offline). Devolve uma função de cancelamento.
+export function watchCommand(uid, id, callback, timeoutMs = 90000) {
+  let done = false;
+  const unsub = onSnapshot(userDoc(uid, "commands", id), snap => {
+    const d = snap.data();
+    if (!d || done) return;
+    if (d.status && d.status !== "PENDENTE") {
+      done = true;
+      callback({ status: d.status, reason: d.reason || d.result || "" });
+      unsub();
+    }
+  });
+  const timer = setTimeout(() => {
+    if (!done) { done = true; unsub(); callback({ status: "TIMEOUT", reason: "o bot não respondeu a tempo" }); }
+  }, timeoutMs);
+  return () => { done = true; clearTimeout(timer); unsub(); };
+}
 export function subscribeTrades(uid, callback) {
   const q = query(userCol(uid, "trades"), orderBy("savedAt", "desc"), limit(500));
   return onSnapshot(q, snap => callback(snap.docs.map(d => ({ ...d.data(), id: d.id }))));
