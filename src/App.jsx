@@ -1138,8 +1138,16 @@ JSON puro — inclui TODOS os ativos relevantes de TODAS as categorias:
           const h = botStatus.apiHealth;
           const agora = Date.now();
           const pill = (nome, estado, detalhe) => {
-            const cor = estado === "ok" ? T.green : estado === "fail" ? T.red : T.muted;
-            const txt = estado === "ok" ? "OK" : estado === "fail" ? "Falha" : "—";
+            const cor = estado === "ok" ? T.green
+              : estado === "fail" ? T.red
+              : estado === "limite" ? T.gold
+              : estado === "off" ? T.muted
+              : T.muted;
+            const txt = estado === "ok" ? "OK"
+              : estado === "fail" ? "Falha"
+              : estado === "limite" ? "Limite"
+              : estado === "off" ? "Desativado"
+              : "—";
             return (
               <div key={nome} style={{
                 display:"flex", alignItems:"center", gap:6, padding:"5px 10px",
@@ -1155,15 +1163,16 @@ JSON puro — inclui TODOS os ativos relevantes de TODAS as categorias:
           const groqDet = h.groq?.rateLimited
             ? `pausado ${Math.max(0, Math.round((h.groq.untilMs - agora)/60000))}min`
             : null;
-          const fonteEstado = (s) => s?.ok === true ? "ok" : s?.ok === false ? "fail" : "unknown";
+          const fonteEstado = (s) => s?.exhausted ? "limite" : s?.disabled ? "off" : s?.ok === true ? "ok" : s?.ok === false ? "fail" : "unknown";
           return (
             <div style={{ display:"flex", gap:8, flexWrap:"wrap", alignItems:"center", padding:"0 4px" }}>
               <span style={{ fontSize:10, color:T.muted, marginRight:2 }}>APIs:</span>
               {pill("Cérebro AI (Groq)", h.groq?.ok ? "ok" : "fail", groqDet)}
-              {pill("Binance", fonteEstado(h.binance), h.binance?.err ? "rede" : null)}
+              {pill("Binance", fonteEstado(h.binance), h.binance?.err && !h.binance?.disabled ? "rede" : null)}
               {pill("CoinGecko", fonteEstado(h.coingecko), h.coingecko?.err ? "rede" : null)}
-              {h.twelvedata && h.twelvedata.ok !== null && pill("TwelveData", fonteEstado(h.twelvedata), h.twelvedata?.err ? "rede" : null)}
-              {h.stooq && h.stooq.ok !== null && pill("Stooq", fonteEstado(h.stooq), h.stooq?.err ? "rede" : null)}
+              {h.twelvedata && (h.twelvedata.ok !== null || h.twelvedata.exhausted) && pill("TwelveData", fonteEstado(h.twelvedata), h.twelvedata?.exhausted ? "repõe amanhã" : h.twelvedata?.err ? "rede" : null)}
+              {h.finnhub && (h.finnhub.ok !== null || h.finnhub.disabled) && pill("Finnhub", fonteEstado(h.finnhub), h.finnhub?.disabled ? "sem API key" : h.finnhub?.err ? "rede" : null)}
+              {h.stooq && (h.stooq.ok !== null || h.stooq.disabled) && pill("Stooq", fonteEstado(h.stooq), h.stooq?.disabled ? "sem API key" : h.stooq?.err ? "rede" : null)}
             </div>
           );
         })()}
