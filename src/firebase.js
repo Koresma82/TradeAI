@@ -102,7 +102,11 @@ export function watchCommand(uid, id, callback, timeoutMs = 90000) {
   return () => { done = true; clearTimeout(timer); unsub(); };
 }
 export function subscribeTrades(uid, callback) {
-  const q = query(userCol(uid, "trades"), orderBy("savedAt", "desc"), limit(500));
+  // limit 150: cobre posições abertas + fechados recentes do dia. Os fechados de
+  // dias anteriores vêm do Arquivo Diário (subscribeArchives), por isso não é
+  // preciso reler 500 trades a cada mudança — poupa leituras Firestore com o bot
+  // a operar (cada abertura/fecho reenviava todos os documentos subscritos).
+  const q = query(userCol(uid, "trades"), orderBy("savedAt", "desc"), limit(150));
   return onSnapshot(q, snap => callback(snap.docs.map(d => ({ ...d.data(), id: d.id }))));
 }
 
