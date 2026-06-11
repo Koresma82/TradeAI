@@ -530,9 +530,13 @@ export default function TradeAI() {
     setTimeout(() => setToasts(p => p.filter(t => t.id !== id)), 6000);
   }, []);
 
-  // ── CoinGecko real prices ──
+  // ── CoinGecko real prices (SÓ quando o bot está inativo) ──
+  // Quando o bot está ativo, ele publica os preços no Firestore (marketPrices) e
+  // a app lê de lá — não bate nas APIs. Isto evita chamadas duplicadas e poupa
+  // créditos (CoinGecko/Netlify). Este loop é só fallback para quando não há bot.
   useEffect(() => {
     const fetch_ = async () => {
+      if (botActiveRef.current) return; // bot ativo → preços vêm do Firestore
       try {
         const r = await fetch(
           "https://api.coingecko.com/api/v3/simple/price?ids=bitcoin,ethereum&vs_currencies=usd&include_24hr_change=true"
@@ -2010,8 +2014,12 @@ JSON: {"signals":[{"id":"btc","sinal":"COMPRAR|VENDER|AGUARDAR","razao":"1 frase
   }, []);
 
   useEffect(() => {
-    const timer = setTimeout(fetchMarketSignals, 3000);
-    const iv = setInterval(fetchMarketSignals, 5 * 60 * 1000);
+    // Só gera sinais AI na app quando o bot está INATIVO. Com o bot ativo, é ele
+    // que gera os sinais — duplicar aqui gastaria a MESMA quota Groq (limite por
+    // organização), competindo com o bot. Poupa tokens e evita rate-limit.
+    const run = () => { if (!botActiveRef.current) fetchMarketSignals(); };
+    const timer = setTimeout(run, 3000);
+    const iv = setInterval(run, 5 * 60 * 1000);
     return () => { clearTimeout(timer); clearInterval(iv); };
   }, [fetchMarketSignals]);
 
@@ -2045,8 +2053,13 @@ JSON: {"signals":[{"id":"btc","sinal":"COMPRAR|VENDER|AGUARDAR","razao":"1 frase
   }, []);
 
   useEffect(() => {
-    fetchMarkets();
-    const iv = setInterval(fetchMarkets, 30000); // refresh 30s
+    // Só faz fetch à Netlify Function quando o bot está INATIVO. Com o bot ativo,
+    // os preços chegam pelo Firestore (marketPrices) — evita chamadas duplicadas
+    // e poupa invocações da função (plano de custos). Verifica a cada 30s, mas só
+    // dispara o fetch se o bot não estiver a publicar.
+    const run = () => { if (!botActiveRef.current) fetchMarkets(); };
+    run();
+    const iv = setInterval(run, 30000);
     return () => clearInterval(iv);
   }, [fetchMarkets]);
 
@@ -2128,6 +2141,13 @@ JSON: {"signals":[{"id":"btc","sinal":"COMPRAR|VENDER|AGUARDAR","razao":"1 frase
     if (!isSim) {
       if (!user) { toast("Precisas de sessão iniciada para enviar ordens ao bot", "error"); setOrderModal(null); return; }
       if (side === "BUY") {
+        // O bot publica a lista de ativos que sabe negociar (botTradeable). Se o
+        // ativo não está lá, a compra seria recusada — avisa já em vez de enviar.
+        if (botTradeable && !botTradeable.has(assetId)) {
+          toast(`${a?.sym || assetId} não está disponível para negociação pelo bot`, "warn");
+          setOrderModal(null);
+          return;
+        }
         cmdToBot({ type: "BUY", assetId, amount }, `📤 Ordem de COMPRA de ${a?.sym} (€${amount}) enviada ao bot`);
       } else {
         const openPos = positions.find(p => p.assetId === assetId);
@@ -3401,7 +3421,7 @@ JSON: {"signals":[{"id":"btc","sinal":"COMPRAR|VENDER|AGUARDAR","razao":"1 frase
                     <div
                       onClick={() => setHistOpenDay(isOpen ? null : a.day)}
                       style={{
-                        display: "grid", gridTemplateColumns: "1.4fr 1fr 1fr 1fr 0.4fr",
+                        display: "grid", gridTemplateColumns: "1.4fr 1fr 1fr 1fr 1fr 0.4fr",
                         gap: 12, padding: "10px 14px", alignItems: "center",
                         fontSize: 12, cursor: "pointer",
                       }}
@@ -3411,6 +3431,7 @@ JSON: {"signals":[{"id":"btc","sinal":"COMPRAR|VENDER|AGUARDAR","razao":"1 frase
                         <div style={{ fontSize: 10, color: T.muted }}>{a.count} trades</div>
                       </div>
                       <div><div style={{ fontSize: 9, color: T.muted }}>P&L</div><div style={{ fontWeight: 700, color: pnlPos ? T.green : T.red }}>{sign(a.pnl || 0)}€{Math.abs(a.pnl || 0).toFixed(2)}</div></div>
+                      <div><div style={{ fontSize: 9, color: T.muted }}>€/trade</div><div style={{ fontWeight: 700, color: pnlPos ? T.green : T.red }}>{a.count ? `${sign((a.pnl||0)/a.count)}€${Math.abs((a.pnl||0)/a.count).toFixed(2)}` : "—"}</div></div>
                       <div><div style={{ fontSize: 9, color: T.muted }}>Win Rate</div><div style={{ fontWeight: 700, color: T.gold }}>{(a.winRate || 0).toFixed(0)}%</div></div>
                       <div><div style={{ fontSize: 9, color: T.muted }}>Wins</div><div style={{ fontWeight: 700 }}>{a.wins ?? 0}/{a.count}</div></div>
                       <div style={{ textAlign: "right", color: T.muted, fontSize: 13 }}>{isOpen ? "▲" : "▼"}</div>
@@ -5252,7 +5273,7 @@ JSON puro:
     if (!user) return;
     const uid2 = user.uid;
     // Carregar posições simuladas abertas
-    let unsubTrades = null, unsubBal = null, unsubBalLive = null, unsubTradeable = null;
+    let unsubTrades = null, unsubBal = null, unsubBalLive = null, unsubTradeable = null, unsubMktPrices = null;
     import("./firebase.js").then(({ subscribeTrades, subscribeSetting }) => {
       unsubTrades = subscribeTrades(uid2, (trades) => {
         // Carregar trades do bot/servidor — separa SIM de LIVE (paper/real).
@@ -5292,6 +5313,18 @@ JSON puro:
         if (Array.isArray(val) && val.length) {
           setBotTradeable(new Set(val.map(a => a.id)));
         }
+      });
+      // Preços publicados pelo bot (marketPrices). Com o bot ativo, a app aplica
+      // estes preços em vez de chamar APIs — fonte única, sem chamadas duplicadas.
+      unsubMktPrices = subscribeSetting(uid2, "marketPrices", (val) => {
+        const p = val?.prices;
+        if (!p || typeof p !== "object") return;
+        setAssets(prev => prev.map(a => {
+          const d = p[a.id];
+          if (!d || typeof d.price !== "number") return a;
+          return { ...a, price: d.price, change: typeof d.change === "number" ? d.change : a.change };
+        }));
+        setLiveData(true);
       });
     }).catch(() => {});
     // Carregar estratégias guardadas
@@ -5377,7 +5410,7 @@ JSON puro:
         if (val && typeof val === "object" && botActiveRef.current) setMarketSignals(val);
       });
     }).catch(() => {});
-    return () => { unsubTrades?.(); unsubBal?.(); unsubBalLive?.(); unsubTradeable?.(); unsubStrat?.(); unsubSettings?.(); unsubLive?.(); unsubLiveLegacy?.(); unsubReal?.(); unsubCtrl?.(); unsubArch?.(); unsubDt?.(); unsubBot?.(); unsubSig?.(); unsubDaily?.(); unsubBrokers?.(); };
+    return () => { unsubTrades?.(); unsubBal?.(); unsubBalLive?.(); unsubTradeable?.(); unsubMktPrices?.(); unsubStrat?.(); unsubSettings?.(); unsubLive?.(); unsubLiveLegacy?.(); unsubReal?.(); unsubCtrl?.(); unsubArch?.(); unsubDt?.(); unsubBot?.(); unsubSig?.(); unsubDaily?.(); unsubBrokers?.(); };
   }, [user]);
 
   // ── Persistência: guardar trade quando aberto ─────────────────────────────
