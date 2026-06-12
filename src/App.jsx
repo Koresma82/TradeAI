@@ -329,6 +329,7 @@ export default function TradeAI() {
   // para Live (paper/real), o histórico mostra logo os trades desse modo.
   useEffect(() => { setHistTab(simMode ? "sim" : "live"); }, [simMode]);
   const [botLogs, setBotLogs] = useState([]); // eventos publicados pelo bot (tab Mensagens)
+  const [priceStats, setPriceStats] = useState({}); // estatísticas históricas por ativo (máx/mín/médias)
   const [msgFiltro, setMsgFiltro] = useState("todos"); // filtro do tab Mensagens
   // ── Day Trading ──
   const [dtActive,     setDtActive]     = useState(false);    // monitor activo
@@ -375,6 +376,17 @@ export default function TradeAI() {
         || assets.find(x => norm(x.sym) === norm(bySym))
         || assets.find(x => norm(x.name) === norm(byName));
   }, [assets]);
+
+  // Comissão estimada — espelha a fórmula do bot (broker.js): crypto 0.25% por
+  // lado (0.5% round-trip); ETF/ação/commodity/forex = 0% na Alpaca. Usado para
+  // mostrar o P&L não realizado JÁ LÍQUIDO (coerente com os trades fechados).
+  const feeRateApp = useCallback((ref) => {
+    const a = resolveAsset(ref);
+    return a && a.cat === "Crypto" ? 0.0025 : 0;
+  }, [resolveAsset]);
+  const roundTripFeeApp = useCallback((ref, amount) =>
+    Math.abs(amount || 0) * feeRateApp(ref) * 2, [feeRateApp]);
+
   const [positions, setPositions] = useState([]);
   const [closed, setClosed]       = useState([]);
   const [strategies, setStrategies] = useState([]);
@@ -819,7 +831,12 @@ export default function TradeAI() {
   const invested    = activePositions.reduce((s, p) => s + p.amount, 0);
   const unrealized  = activePositions.reduce((s, p) => {
     const a = resolveAsset(p);
-    return s + (a ? (a.price - p.entryPrice) * p.units : 0);
+    if (!a) return s;
+    const bruto = (a.price - p.entryPrice) * p.units;
+    // Desconta a comissão round-trip estimada → P&L líquido, coerente com os
+    // trades fechados (que já mostram líquido). Evita "greens" otimistas.
+    const fee = roundTripFeeApp(p, p.amount);
+    return s + (bruto - fee);
   }, 0);
   const realized    = activeClosed.reduce((s, p) => s + (p.pnl || 0), 0);
   const totalPnl    = unrealized + realized;
@@ -1041,7 +1058,7 @@ JSON puro — inclui TODOS os ativos relevantes de TODAS as categorias:
     const pnlDe = (p) => {
       const a = assets.find(x => x.id === p.assetId);
       const price = a?.price || p.entryPrice;
-      return (price - p.entryPrice) * p.units;
+      return (price - p.entryPrice) * p.units - roundTripFeeApp(p, p.amount);
     };
     const grupos = {};
     activePositions.forEach(p => {
@@ -1372,7 +1389,7 @@ JSON puro — inclui TODOS os ativos relevantes de TODAS as categorias:
                 const openForStrat = activePositions.filter(p => p.stratId === s.id);
                 const openPnl = openForStrat.reduce((sum, p) => {
                   const a = resolveAsset(p);
-                  return sum + (a ? (a.price - p.entryPrice) * p.units : 0);
+                  return sum + (a ? (a.price - p.entryPrice) * p.units - roundTripFeeApp(p, p.amount) : 0);
                 }, 0);
                 const total = stratPnl + openPnl;
                 return (
@@ -1422,7 +1439,7 @@ JSON puro — inclui TODOS os ativos relevantes de TODAS as categorias:
                             || assets.find(x => norm(x.name) === norm(pos.assetName));
                 const live   = mktData[a?.id] || {};
                 const price  = live.price ?? a?.price ?? pos.entryPrice;
-                const pnl    = (price - pos.entryPrice) * pos.units;
+                const pnl    = (price - pos.entryPrice) * pos.units - roundTripFeeApp(pos, pos.amount);
                 const pnlPct = pos.amount > 0 ? (pnl / pos.amount) * 100 : 0;
                 const col    = pnl >= 0 ? T.green : T.red;
                 const spark  = (live.sparkline?.length ? live.sparkline : a?.hist?.slice(-50)) || [];
@@ -2361,7 +2378,7 @@ JSON: {"signals":[{"id":"btc","sinal":"COMPRAR|VENDER|AGUARDAR","razao":"1 frase
                 if (!a) return null;
                 const live    = mktData[a.id] || {};
                 const price   = live.price ?? a.price;
-                const pnl     = (price - pos.entryPrice) * pos.units;
+                const pnl     = (price - pos.entryPrice) * pos.units - roundTripFeeApp(pos, pos.amount);
                 const pnlPct  = (pnl / pos.amount) * 100;
                 const col     = pnl>=0 ? T.green : T.red;
                 const spark   = live.sparkline?.length ? live.sparkline : a.hist.slice(-60);
@@ -2608,7 +2625,7 @@ JSON: {"signals":[{"id":"btc","sinal":"COMPRAR|VENDER|AGUARDAR","razao":"1 frase
           const isUp      = change >= 0;
           const col       = isUp ? T.green : T.red;
           const openPos   = positions.find(p => p.assetId === a.id);
-          const posPnl    = openPos ? (price - openPos.entryPrice) * openPos.units : null;
+          const posPnl    = openPos ? ((price - openPos.entryPrice) * openPos.units - roundTripFeeApp(openPos, openPos.amount)) : null;
 
           return (
             <Glass key={a.id} style={{ padding: "0", overflow: "hidden" }}
@@ -2745,6 +2762,30 @@ JSON: {"signals":[{"id":"btc","sinal":"COMPRAR|VENDER|AGUARDAR","razao":"1 frase
                     </div>
                   ))}
                 </div>
+
+                {/* Stats históricas (90 dias) — publicadas pelo bot. Ajudam a ver
+                    se o preço atual está caro/barato face ao histórico recente. */}
+                {(() => {
+                  const ps = priceStats[a.id];
+                  if (!ps) return null;
+                  const dp = a.id === "eurusd" ? 4 : (price < 1 ? 4 : 2);
+                  const f = (v) => (v != null ? `$${Number(v).toFixed(dp)}` : "—");
+                  return (
+                    <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr 1fr", gap: 8, marginTop: 8 }}>
+                      {[
+                        { l: "Máx 90d",   v: f(ps.max90),    c: T.green },
+                        { l: "Mín 90d",   v: f(ps.min90),    c: T.red   },
+                        { l: "Méd semana", v: f(ps.avgWeek)             },
+                        { l: "Méd mês",    v: f(ps.avgMonth)            },
+                      ].map(s => (
+                        <div key={s.l} style={{ background: "rgba(0,0,0,0.12)", borderRadius: 7, padding: "7px 9px" }}>
+                          <div style={{ fontSize: 8, color: T.muted, letterSpacing: "0.08em", textTransform: "uppercase", marginBottom: 3 }}>{s.l}</div>
+                          <div style={{ fontSize: 12, fontWeight: 700, color: s.c || T.text }}>{s.v}</div>
+                        </div>
+                      ))}
+                    </div>
+                  );
+                })()}
               </div>
 
               {/* Posição aberta neste ativo */}
@@ -3183,7 +3224,7 @@ JSON: {"signals":[{"id":"btc","sinal":"COMPRAR|VENDER|AGUARDAR","razao":"1 frase
 
     const liveTrades = [...positions.map(p => {
       const a = findAsset(p);
-      return { ...p, curPnl: a ? (a.price - p.entryPrice) * p.units : 0, livePrice: a?.price, mode: "live" };
+      return { ...p, curPnl: a ? (a.price - p.entryPrice) * p.units - roundTripFeeApp(p, p.amount) : 0, livePrice: a?.price, mode: "live" };
     }), ...closed.map(t => ({...t, mode:"live"}))];
 
     const activeTrades = histTab === "sim" ? simTrades : liveTrades;
@@ -4655,10 +4696,11 @@ pm2 save && pm2 startup`}</CodeBlock>
     // Scan AI: analisa ativos voláteis e decide comprar/vender agora
     const runScan = async (auto = false) => {
       if (dtLoading) return;
-      // Se o bot 24/7 está ativo (modo SIM), é ele que faz o day trading no servidor.
-      // O scan automático da app pára (evita trades/tokens duplicados). O "Scan Agora"
-      // manual continua a funcionar como análise informativa, mas não auto-compra.
-      if (auto && simModeRef.current && botActiveRef.current) return;
+      // Se o bot 24/7 está ativo, é ele que faz o day trading no servidor (em
+      // qualquer modo: sim, paper ou real). O scan AUTOMÁTICO da app pára para não
+      // duplicar trades nem gastar tokens Groq. O "Scan Agora" manual continua a
+      // funcionar como análise informativa (mas em paper/real não auto-compra).
+      if (auto && botActiveRef.current) return;
       setDtLoading(true);
       try {
         // Watchlist: ativos escolhidos pelo user, OU (por defeito) os tradeable +
@@ -4767,6 +4809,14 @@ JSON puro:
               const dtCount = pool.filter(p => p.stratId === "daytrading").length;
               const maxDt = settingsRef.current?.maxDayTrading ?? 5;
               if (dtCount >= maxDt) { continue; }
+              // AUTORIDADE DO BOT: em paper/real, a app NÃO executa day-trades.
+              // O bot (servidor) é a única autoridade de execução — gera e gere os
+              // day-trades, que aparecem na lista paper. A app aqui é só análise.
+              // Auto-comprar localmente duplicaria posições e dessincronizaria o
+              // saldo. Só em SIMULAÇÃO pura (sem bot) é que a app simula localmente.
+              if (!simMode) {
+                continue; // paper/real → deixa o bot executar; app não cria trade
+              }
               const price = mktData[a.id]?.price || a.price;
               const units = +(dtAmount / price).toFixed(7);
               const sl    = +(price * (1 - dtMaxLoss    / 100)).toFixed(2);
@@ -4776,16 +4826,11 @@ JSON puro:
                 action: "COMPRAR", entryPrice: price, units, amount: dtAmount,
                 sl, tp, strategy: `DayTrade — ${op.previsao?.slice(0,40)}`,
                 openedAt: new Date().toLocaleString("pt-PT"), openedTs: Date.now(), status: "ABERTA",
-                mode: simMode ? "sim" : "live",
+                mode: "sim",
               };
               setDtTrades(p => [trade, ...p]);
-              if (simMode) {
-                setSimPositions(p => [...p, { ...trade, stratId: "daytrading" }]);
-                setSimBalance(b => { const n = +(Math.max(0, b - dtAmount)).toFixed(2); simBalRef.current = n; return n; });
-              } else {
-                setPositions(p => [...p, { ...trade, stratId: "daytrading" }]);
-                setBalance(b => { const n = +(Math.max(0, b - dtAmount)).toFixed(2); balRef.current = n; return n; });
-              }
+              setSimPositions(p => [...p, { ...trade, stratId: "daytrading" }]);
+              setSimBalance(b => { const n = +(Math.max(0, b - dtAmount)).toFixed(2); simBalRef.current = n; return n; });
               toast(`⚡ DayTrade: COMPROU ${a.sym} @$${price.toFixed(2)} · Alvo +${dtProfitTarget}%`, "buy");
             }
           }
@@ -5387,6 +5432,10 @@ JSON puro:
           setBotTradeable(new Set(val.map(a => a.id)));
         }
       });
+      // Estatísticas históricas (máx/mín 90d, média semana/mês) publicadas pelo bot.
+      unsubPriceStats = subscribeSetting(uid2, "priceStats", (val) => {
+        if (val?.stats && typeof val.stats === "object") setPriceStats(val.stats);
+      });
       // Preços publicados pelo bot (marketPrices). Com o bot ativo, a app aplica
       // estes preços em vez de chamar APIs — fonte única, sem chamadas duplicadas.
       unsubMktPrices = subscribeSetting(uid2, "marketPrices", (val) => {
@@ -5401,7 +5450,7 @@ JSON puro:
       });
     }).catch(() => {});
     // Carregar estratégias guardadas
-    let unsubStrat = null, unsubSettings = null, unsubLive = null, unsubLiveLegacy = null, unsubReal = null, unsubCtrl = null, unsubArch = null, unsubDt = null, unsubBot = null, unsubSig = null, unsubDaily = null, unsubBrokers = null, unsubLogs = null;
+    let unsubStrat = null, unsubSettings = null, unsubLive = null, unsubLiveLegacy = null, unsubReal = null, unsubCtrl = null, unsubArch = null, unsubDt = null, unsubBot = null, unsubSig = null, unsubDaily = null, unsubBrokers = null, unsubLogs = null, unsubPriceStats = null;
     import("./firebase.js").then(({ subscribeStrategies, subscribeSetting: subSet, subscribeArchives, subscribeLogs }) => {
       if (subscribeArchives) {
         unsubDaily = subscribeArchives(uid2, (arcs) => {
@@ -5486,7 +5535,7 @@ JSON puro:
         if (val && typeof val === "object" && botActiveRef.current) setMarketSignals(val);
       });
     }).catch(() => {});
-    return () => { unsubTrades?.(); unsubBal?.(); unsubBalLive?.(); unsubTradeable?.(); unsubMktPrices?.(); unsubStrat?.(); unsubSettings?.(); unsubLive?.(); unsubLiveLegacy?.(); unsubReal?.(); unsubCtrl?.(); unsubArch?.(); unsubDt?.(); unsubBot?.(); unsubSig?.(); unsubDaily?.(); unsubBrokers?.(); unsubLogs?.(); };
+    return () => { unsubTrades?.(); unsubBal?.(); unsubBalLive?.(); unsubTradeable?.(); unsubMktPrices?.(); unsubStrat?.(); unsubSettings?.(); unsubLive?.(); unsubLiveLegacy?.(); unsubReal?.(); unsubCtrl?.(); unsubArch?.(); unsubDt?.(); unsubBot?.(); unsubSig?.(); unsubDaily?.(); unsubBrokers?.(); unsubLogs?.(); unsubPriceStats?.(); };
   }, [user]);
 
   // ── Persistência: guardar trade quando aberto ─────────────────────────────
