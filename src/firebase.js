@@ -1,6 +1,6 @@
 import { initializeApp } from "firebase/app";
 import {
-  getFirestore, collection, doc, setDoc, deleteDoc,
+  getFirestore, collection, doc, setDoc, deleteDoc, getDocs,
   onSnapshot, query, orderBy, limit, serverTimestamp,
 } from "firebase/firestore";
 import {
@@ -108,6 +108,22 @@ export function subscribeTrades(uid, callback) {
   // a operar (cada abertura/fecho reenviava todos os documentos subscritos).
   const q = query(userCol(uid, "trades"), orderBy("savedAt", "desc"), limit(150));
   return onSnapshot(q, snap => callback(snap.docs.map(d => ({ ...d.data(), id: d.id }))));
+}
+// Eventos do bot (tab Mensagens): docs logs/{dia}, cada um com items[]. Lê os
+// últimos 5 dias por data desc e junta tudo num array ordenado por tempo.
+export function subscribeLogs(uid, callback) {
+  const q = query(userCol(uid, "logs"), orderBy("day", "desc"), limit(5));
+  return onSnapshot(q, snap => {
+    const all = [];
+    snap.docs.forEach(d => { (d.data().items || []).forEach(it => all.push(it)); });
+    all.sort((a, b) => (b.ts || 0) - (a.ts || 0));
+    callback(all);
+  });
+}
+// Limpar todas as mensagens (apaga os docs da coleção logs).
+export async function clearLogs(uid) {
+  const snap = await getDocs(userCol(uid, "logs"));
+  await Promise.all(snap.docs.map(d => deleteDoc(d.ref)));
 }
 
 // ── Settings ──────────────────────────────────────────────────────────────────

@@ -328,6 +328,7 @@ export default function TradeAI() {
   // O separador do histórico segue o toggle principal: ao mudar de Simulação
   // para Live (paper/real), o histórico mostra logo os trades desse modo.
   useEffect(() => { setHistTab(simMode ? "sim" : "live"); }, [simMode]);
+  const [botLogs, setBotLogs] = useState([]); // eventos publicados pelo bot (tab Mensagens)
   // ── Day Trading ──
   const [dtActive,     setDtActive]     = useState(false);    // monitor activo
   const [dtAssets,     setDtAssets]     = useState([]);       // ativos a monitorizar com AI
@@ -3655,6 +3656,76 @@ JSON: {"signals":[{"id":"btc","sinal":"COMPRAR|VENDER|AGUARDAR","razao":"1 frase
     );
   };
 
+  // RENDER: MENSAGENS (eventos do bot — erros + trading)
+  // ─────────────────────────────────────────────
+  const Messages = () => {
+    const [filtro, setFiltro] = useState("todos");
+    const corNivel = (lvl) => lvl === "buy" ? T.blue : lvl === "sell" ? T.green
+      : lvl === "error" ? T.red : lvl === "warn" ? T.gold : T.muted;
+    const iconNivel = (lvl) => lvl === "buy" ? "🛒" : lvl === "sell" ? "💰"
+      : lvl === "error" ? "🚫" : lvl === "warn" ? "⚠️" : "•";
+    const filtrados = botLogs.filter(l => {
+      if (filtro === "todos") return true;
+      if (filtro === "trading") return l.level === "buy" || l.level === "sell";
+      if (filtro === "erros") return l.level === "error" || l.level === "warn";
+      return true;
+    });
+    const limpar = () => {
+      if (!user) return;
+      if (!window.confirm("Apagar todas as mensagens? Esta ação não pode ser desfeita.")) return;
+      import("./firebase.js").then(({ clearLogs }) => clearLogs(user.uid).then(() => {
+        setBotLogs([]); toast("Mensagens apagadas", "success");
+      }).catch(() => toast("Falha ao apagar", "error")));
+    };
+    const hora = (ts) => { try { return new Date(ts).toLocaleString("pt-PT"); } catch { return ""; } };
+
+    return (
+      <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
+        <Glass style={{ padding: "20px 24px" }}>
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: 12 }}>
+            <div>
+              <div style={{ fontSize: 16, fontWeight: 700 }}>🔔 Mensagens do Bot</div>
+              <div style={{ fontSize: 11, color: T.muted, marginTop: 4 }}>Eventos de trading e erros. Guardadas 3 dias (apagam-se sozinhas).</div>
+            </div>
+            <button onClick={limpar} style={{
+              padding: "8px 16px", borderRadius: 8, border: `1px solid ${T.red}40`,
+              background: `${T.red}15`, color: T.red, fontSize: 12, fontWeight: 600, cursor: "pointer",
+            }}>🗑 Limpar tudo</button>
+          </div>
+          <div style={{ display: "flex", gap: 8, marginTop: 16 }}>
+            {[["todos", "Todos"], ["trading", "🛒 Trading"], ["erros", "⚠️ Erros"]].map(([id, lbl]) => (
+              <button key={id} onClick={() => setFiltro(id)} style={{
+                padding: "6px 14px", borderRadius: 8, fontSize: 12, fontWeight: 600, cursor: "pointer",
+                border: `1px solid ${filtro === id ? T.aLight : T.border}`,
+                background: filtro === id ? `${T.aLight}18` : "transparent",
+                color: filtro === id ? T.aLight : T.muted,
+              }}>{lbl}</button>
+            ))}
+          </div>
+        </Glass>
+
+        <Glass style={{ padding: filtrados.length ? "8px 0" : "40px 24px" }}>
+          {!filtrados.length ? (
+            <div style={{ textAlign: "center", color: T.muted, fontSize: 13 }}>
+              Sem mensagens {filtro !== "todos" ? "neste filtro" : "ainda"}. Os eventos do bot aparecem aqui.
+            </div>
+          ) : filtrados.map((l, i) => (
+            <div key={i} style={{
+              display: "flex", alignItems: "flex-start", gap: 12, padding: "10px 24px",
+              borderBottom: i < filtrados.length - 1 ? `1px solid ${T.border}` : "none",
+            }}>
+              <span style={{ fontSize: 14, flexShrink: 0 }}>{iconNivel(l.level)}</span>
+              <div style={{ flex: 1, minWidth: 0 }}>
+                <div style={{ fontSize: 13, color: corNivel(l.level), fontWeight: 600, wordBreak: "break-word" }}>{l.msg}</div>
+                <div style={{ fontSize: 10, color: T.muted, marginTop: 2 }}>{hora(l.ts)}</div>
+              </div>
+            </div>
+          ))}
+        </Glass>
+      </div>
+    );
+  };
+
   // RENDER: GUIA
   // ─────────────────────────────────────────────
   const Guide = () => {
@@ -5264,6 +5335,7 @@ JSON puro:
     { id: "daytrading", icon: "⚡",  label: "Day Trading"   },
     { id: "ai",         icon: "◆",  label: "AI Intel"       },
     { id: "history",    icon: "≡",  label: "Histórico"      },
+    { id: "messages",   icon: "🔔", label: "Mensagens"      },
     { id: "settings",   icon: "⚙",  label: "Definições"    },
     { id: "guide",      icon: "◉",  label: "Guia Setup"     },
   ];
@@ -5328,12 +5400,15 @@ JSON puro:
       });
     }).catch(() => {});
     // Carregar estratégias guardadas
-    let unsubStrat = null, unsubSettings = null, unsubLive = null, unsubLiveLegacy = null, unsubReal = null, unsubCtrl = null, unsubArch = null, unsubDt = null, unsubBot = null, unsubSig = null, unsubDaily = null, unsubBrokers = null;
-    import("./firebase.js").then(({ subscribeStrategies, subscribeSetting: subSet, subscribeArchives }) => {
+    let unsubStrat = null, unsubSettings = null, unsubLive = null, unsubLiveLegacy = null, unsubReal = null, unsubCtrl = null, unsubArch = null, unsubDt = null, unsubBot = null, unsubSig = null, unsubDaily = null, unsubBrokers = null, unsubLogs = null;
+    import("./firebase.js").then(({ subscribeStrategies, subscribeSetting: subSet, subscribeArchives, subscribeLogs }) => {
       if (subscribeArchives) {
         unsubDaily = subscribeArchives(uid2, (arcs) => {
           if (Array.isArray(arcs)) setDailyArchives(arcs);
         });
+      }
+      if (subscribeLogs) {
+        unsubLogs = subscribeLogs(uid2, (logs) => { if (Array.isArray(logs)) setBotLogs(logs); });
       }
       if (subscribeStrategies) {
         unsubStrat = subscribeStrategies(uid2, (strats) => {
@@ -5410,7 +5485,7 @@ JSON puro:
         if (val && typeof val === "object" && botActiveRef.current) setMarketSignals(val);
       });
     }).catch(() => {});
-    return () => { unsubTrades?.(); unsubBal?.(); unsubBalLive?.(); unsubTradeable?.(); unsubMktPrices?.(); unsubStrat?.(); unsubSettings?.(); unsubLive?.(); unsubLiveLegacy?.(); unsubReal?.(); unsubCtrl?.(); unsubArch?.(); unsubDt?.(); unsubBot?.(); unsubSig?.(); unsubDaily?.(); unsubBrokers?.(); };
+    return () => { unsubTrades?.(); unsubBal?.(); unsubBalLive?.(); unsubTradeable?.(); unsubMktPrices?.(); unsubStrat?.(); unsubSettings?.(); unsubLive?.(); unsubLiveLegacy?.(); unsubReal?.(); unsubCtrl?.(); unsubArch?.(); unsubDt?.(); unsubBot?.(); unsubSig?.(); unsubDaily?.(); unsubBrokers?.(); unsubLogs?.(); };
   }, [user]);
 
   // ── Persistência: guardar trade quando aberto ─────────────────────────────
@@ -5634,6 +5709,7 @@ JSON puro:
             {tab === "strategies" && <Strategies />}
             {tab === "ai"         && AIIntel()}
             {tab === "history"    && History()}
+            {tab === "messages"   && Messages()}
             {tab === "daytrading" && DayTrading()}
             {tab === "settings"   && Settings()}
             {tab === "guide"      && Guide()}
