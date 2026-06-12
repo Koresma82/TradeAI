@@ -329,6 +329,7 @@ export default function TradeAI() {
   // para Live (paper/real), o histórico mostra logo os trades desse modo.
   useEffect(() => { setHistTab(simMode ? "sim" : "live"); }, [simMode]);
   const [botLogs, setBotLogs] = useState([]); // eventos publicados pelo bot (tab Mensagens)
+  const [msgFiltro, setMsgFiltro] = useState("todos"); // filtro do tab Mensagens
   // ── Day Trading ──
   const [dtActive,     setDtActive]     = useState(false);    // monitor activo
   const [dtAssets,     setDtAssets]     = useState([]);       // ativos a monitorizar com AI
@@ -3659,7 +3660,7 @@ JSON: {"signals":[{"id":"btc","sinal":"COMPRAR|VENDER|AGUARDAR","razao":"1 frase
   // RENDER: MENSAGENS (eventos do bot — erros + trading)
   // ─────────────────────────────────────────────
   const Messages = () => {
-    const [filtro, setFiltro] = useState("todos");
+    const filtro = msgFiltro, setFiltro = setMsgFiltro;
     const corNivel = (lvl) => lvl === "buy" ? T.blue : lvl === "sell" ? T.green
       : lvl === "error" ? T.red : lvl === "warn" ? T.gold : T.muted;
     const iconNivel = (lvl) => lvl === "buy" ? "🛒" : lvl === "sell" ? "💰"
