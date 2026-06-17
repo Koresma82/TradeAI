@@ -3447,8 +3447,139 @@ JSON: {"signals":[{"id":"btc","sinal":"COMPRAR|VENDER|AGUARDAR","razao":"1 frase
             })
             .filter(Boolean);
           if (!archForTab.length) return null;
+          // ── Expectativa acumulada (vários dias) ─────────────────────────────
+          // Junta TODOS os trades de TODOS os dias arquivados (já filtrados pelo
+          // modo do separador) e calcula a expectativa por trade ao longo do
+          // período. Fórmula idêntica à dos cartões: net / nº de trades, que é
+          // algebricamente igual a (ganhoMédio × taxaAcerto − perdaMédia × taxaErro).
+          // O objetivo é distinguir uma VANTAGEM ESTÁVEL de SORTE: mostramos
+          // também a concentração (quanto do lucro vem do melhor dia isolado).
+          const acc = (() => {
+            const all = archForTab.flatMap(a =>
+              (a.trades || []).filter(t => typeof t.pnl === "number"));
+            if (all.length === 0) return null;
+            const wins   = all.filter(t => t.pnl > 0);
+            const losses = all.filter(t => t.pnl <= 0);
+            const grossWin  = wins.reduce((s, t) => s + t.pnl, 0);
+            const grossLoss = Math.abs(losses.reduce((s, t) => s + t.pnl, 0));
+            const net       = grossWin - grossLoss;
+            const winRate   = wins.length / all.length;          // 0..1
+            const lossRate  = 1 - winRate;
+            const avgWin    = wins.length   ? grossWin  / wins.length   : 0;
+            const avgLoss   = losses.length ? grossLoss / losses.length : 0;
+            const expectancy = net / all.length;                 // €/trade no período
+            // Concentração: P&L por dia, contributo do melhor dia para o total.
+            const dayPnls = archForTab.map(a => +(a.pnl || 0));
+            const totalPnl = dayPnls.reduce((s, p) => s + p, 0);
+            const bestDayPnl = dayPnls.length ? Math.max(...dayPnls) : 0;
+            const netSemMelhor = +(totalPnl - bestDayPnl).toFixed(2);
+            const concentracao = totalPnl > 0 ? (bestDayPnl / totalPnl) * 100 : null;
+            const diasPos = dayPnls.filter(p => p > 0).length;
+            // Veredicto simples sobre estabilidade da vantagem.
+            let veredito, vColor;
+            if (expectancy <= 0) {
+              veredito = "Sem vantagem — expectativa por trade negativa ou nula no período.";
+              vColor = T.red;
+            } else if (netSemMelhor <= 0) {
+              veredito = "Vantagem frágil — todo o lucro depende do melhor dia. Sem ele, o período é negativo.";
+              vColor = T.red;
+            } else if (concentracao !== null && concentracao >= 60) {
+              veredito = `Vantagem concentrada — ${concentracao.toFixed(0)}% do lucro vem de um só dia. Precisa de mais dias para confirmar.`;
+              vColor = T.gold;
+            } else {
+              veredito = "Vantagem aparentemente estável — o lucro não depende de um único dia.";
+              vColor = T.green;
+            }
+            return { all, wins, losses, grossWin, grossLoss, net, winRate, lossRate,
+                     avgWin, avgLoss, expectancy, totalPnl, bestDayPnl, netSemMelhor,
+                     concentracao, diasPos, veredito, vColor, dias: archForTab.length };
+          })();
+          // ── Soma de todo o histórico (só arquivos diários) ──────────────────
+          // Totais agregados de TODOS os dias arquivados, no modo do separador.
+          // Ganho bruto, perda bruta, P&L líquido, nº de trades e dias.
+          const tot = (() => {
+            const all = archForTab.flatMap(a =>
+              (a.trades || []).filter(t => typeof t.pnl === "number"));
+            const wins   = all.filter(t => t.pnl > 0);
+            const losses = all.filter(t => t.pnl <= 0);
+            const grossWin  = +wins.reduce((s, t) => s + t.pnl, 0).toFixed(2);
+            const grossLoss = +Math.abs(losses.reduce((s, t) => s + t.pnl, 0)).toFixed(2);
+            const net       = +(grossWin - grossLoss).toFixed(2);
+            const profitFactor = grossLoss > 0 ? grossWin / grossLoss : (grossWin > 0 ? Infinity : 0);
+            const bestTrade  = all.length ? Math.max(...all.map(t => t.pnl)) : 0;
+            const worstTrade = all.length ? Math.min(...all.map(t => t.pnl)) : 0;
+            return { nTrades: all.length, dias: archForTab.length, wins: wins.length,
+                     losses: losses.length, grossWin, grossLoss, net, profitFactor,
+                     bestTrade, worstTrade };
+          })();
           return (
           <Glass style={{ padding: "16px 18px" }}>
+            {tot.nTrades > 0 && (
+              <div style={{
+                marginBottom: 16, padding: "14px 16px", borderRadius: 12,
+                background: `${T.aLight}0E`, border: `1px solid ${T.border}`,
+              }}>
+                <div style={{ fontSize: 12, fontWeight: 700, marginBottom: 4 }}>
+                  Σ Total do histórico · {tot.dias} dia{tot.dias === 1 ? "" : "s"} · {tot.nTrades} trades
+                </div>
+                <div style={{ fontSize: 10, color: T.muted, marginBottom: 12 }}>
+                  Soma agregada de todos os arquivos diários ({histTab === "sim" ? "simulação" : "live/paper"}).
+                </div>
+                <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(110px, 1fr))", gap: 12 }}>
+                  {[
+                    { l: "P&L líquido", v: `${sign(tot.net)}€${Math.abs(tot.net).toFixed(2)}`,
+                      c: tot.net >= 0 ? T.green : T.red, sub: `${tot.nTrades} trades` },
+                    { l: "Ganho bruto", v: `+€${tot.grossWin.toFixed(2)}`, c: T.green, sub: `${tot.wins} wins` },
+                    { l: "Perda bruta", v: `−€${tot.grossLoss.toFixed(2)}`, c: T.red, sub: `${tot.losses} perdas` },
+                    { l: "Profit factor", v: tot.profitFactor === Infinity ? "∞" : tot.profitFactor.toFixed(2),
+                      c: tot.profitFactor >= 1 ? T.green : T.red, sub: "bruto÷perda" },
+                    { l: "Melhor trade", v: `+€${Math.abs(tot.bestTrade).toFixed(2)}`, c: T.green, sub: "isolado" },
+                    { l: "Pior trade", v: `−€${Math.abs(tot.worstTrade).toFixed(2)}`, c: T.red, sub: "isolado" },
+                  ].map((m, i) => (
+                    <div key={i}>
+                      <div style={{ fontSize: 9, color: T.muted, textTransform: "uppercase", letterSpacing: "0.06em" }}>{m.l}</div>
+                      <div style={{ fontSize: 16, fontWeight: 800, color: m.c }}>{m.v}</div>
+                      {m.sub && <div style={{ fontSize: 9, color: T.muted }}>{m.sub}</div>}
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+            {acc && (
+              <div style={{
+                marginBottom: 16, padding: "14px 16px", borderRadius: 12,
+                background: `${acc.vColor}0E`, border: `1px solid ${acc.vColor}33`,
+              }}>
+                <div style={{ fontSize: 12, fontWeight: 700, marginBottom: 4 }}>
+                  📈 Expectativa acumulada · {acc.dias} dia{acc.dias === 1 ? "" : "s"} · {acc.all.length} trades
+                </div>
+                <div style={{ fontSize: 10, color: T.muted, marginBottom: 12 }}>
+                  Mede se a vantagem é estável ou se o lucro depende de poucos dias excecionais.
+                </div>
+                <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(110px, 1fr))", gap: 12, marginBottom: 12 }}>
+                  {[
+                    { l: "Expectativa / trade", v: `${sign(acc.expectancy)}€${Math.abs(acc.expectancy).toFixed(2)}`,
+                      c: acc.expectancy >= 0 ? T.green : T.red, sub: "no período" },
+                    { l: "Taxa de acerto", v: `${(acc.winRate * 100).toFixed(0)}%`, c: T.gold,
+                      sub: `${acc.wins.length}/${acc.all.length} trades` },
+                    { l: "Ganho médio", v: `+€${acc.avgWin.toFixed(2)}`, c: T.green, sub: `${acc.wins.length} wins` },
+                    { l: "Perda média", v: `−€${acc.avgLoss.toFixed(2)}`, c: T.red, sub: `${acc.losses.length} perdas` },
+                    { l: "P&L total", v: `${sign(acc.totalPnl)}€${Math.abs(acc.totalPnl).toFixed(2)}`,
+                      c: acc.totalPnl >= 0 ? T.green : T.red, sub: `${acc.diasPos}/${acc.dias} dias positivos` },
+                    { l: "Sem o melhor dia", v: `${sign(acc.netSemMelhor)}€${Math.abs(acc.netSemMelhor).toFixed(2)}`,
+                      c: acc.netSemMelhor >= 0 ? T.green : T.red,
+                      sub: acc.concentracao !== null ? `melhor dia = ${acc.concentracao.toFixed(0)}% do lucro` : "—" },
+                  ].map((m, i) => (
+                    <div key={i}>
+                      <div style={{ fontSize: 9, color: T.muted, textTransform: "uppercase", letterSpacing: "0.06em" }}>{m.l}</div>
+                      <div style={{ fontSize: 16, fontWeight: 800, color: m.c }}>{m.v}</div>
+                      {m.sub && <div style={{ fontSize: 9, color: T.muted }}>{m.sub}</div>}
+                    </div>
+                  ))}
+                </div>
+                <div style={{ fontSize: 11, color: acc.vColor, fontWeight: 600 }}>{acc.veredito}</div>
+              </div>
+            )}
             <div style={{ fontSize: 12, fontWeight: 700, marginBottom: 12 }}>🗓 Arquivo Diário ({archForTab.length} dias)</div>
             <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
               {archForTab.map((a) => {
