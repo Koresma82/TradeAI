@@ -524,6 +524,17 @@ export default function TradeAI() {
   // A app só tinha sim/live; o bot publica o modo verdadeiro no heartbeat.
   const botModoReal  = botStatus?.mode === "real";
   const botModoPaper = botStatus?.mode === "paper";
+  // ── Câmbio (exibição) ───────────────────────────────────────────────────────
+  // O bot publica a moeda REAL dos valores (USD em paper/real, porque a Alpaca e
+  // a Binance operam em dólares) e a taxa EUR/USD ao vivo. Os números do motor
+  // (saldo, P&L) estão nessa moeda; aqui convertemos só para EXIBIR em euros.
+  // 1 EUR = fxEurUsd USD  →  euros = usd / fxEurUsd.
+  const brokerCurrency = botStatus?.currency || (simMode ? "EUR" : "USD");
+  const fxEurUsd = Number(botStatus?.fxEurUsd) > 0 ? Number(botStatus.fxEurUsd) : null;
+  const valoresEmUSD = brokerCurrency === "USD";
+  // Converte um valor da moeda do broker para euros (para exibição). Se não
+  // houver taxa ou os valores já forem euros, devolve tal e qual.
+  const toEur = (v) => (valoresEmUSD && fxEurUsd ? v / fxEurUsd : v);
   // Conjunto de definições "live" efetivo: real se o bot está em real, senão
   // paper. É isto que a app usa para sizing/preview quando não está em sim.
   const liveSettings = botModoReal ? realSettings : paperSettings;
@@ -1246,7 +1257,16 @@ JSON puro — inclui TODOS os ativos relevantes de TODAS as categorias:
           <div className="resp-hero" style={{ display: "grid", gridTemplateColumns: "2fr 1fr 1fr 1fr", gap: 28 }}>
             <div>
               <div style={{ fontSize: 10, color: T.aLight, letterSpacing: "0.14em", textTransform: "uppercase", marginBottom: 8 }}>Portfólio Total</div>
-              <div style={{ fontSize: 40, fontWeight: 800, letterSpacing: "-0.03em" }}>€{portfolioV.toFixed(2)}</div>
+              <div style={{ fontSize: 40, fontWeight: 800, letterSpacing: "-0.03em" }}>
+                {valoresEmUSD ? "$" : "€"}{portfolioV.toFixed(2)}
+              </div>
+              {valoresEmUSD && (
+                <div style={{ fontSize: 11, color: T.muted, marginTop: 4 }}>
+                  {fxEurUsd
+                    ? <>≈ €{toEur(portfolioV).toFixed(2)} · valores na moeda do broker (USD) · 1€={fxEurUsd.toFixed(4)}$</>
+                    : <>valores em USD (moeda do broker) · taxa EUR/USD indisponível</>}
+                </div>
+              )}
               {brokerBalances && Object.keys(brokerBalances).length > 0 && (
                 <div style={{ display:"flex", gap:8, flexWrap:"wrap", marginTop:8 }}>
                   {Object.entries(brokerBalances).map(([bid, bal]) => (
@@ -3851,6 +3871,30 @@ JSON: {"signals":[{"id":"btc","sinal":"COMPRAR|VENDER|AGUARDAR","razao":"1 frase
       }).catch(() => toast("Falha ao apagar", "error")));
     };
     const hora = (ts) => { try { return new Date(ts).toLocaleString("pt-PT"); } catch { return ""; } };
+    // Exportar as mensagens filtradas como texto, para copiar/colar (ex.: para
+    // análise). Inclui data, nível e mensagem, uma por linha, em ordem cronológica.
+    const exportar = async () => {
+      if (!filtrados.length) { toast("Nada para exportar neste filtro", "warn"); return; }
+      const linhas = [...filtrados]
+        .sort((a, b) => (a.ts || 0) - (b.ts || 0)) // cronológico (mais antigo primeiro)
+        .map(l => `[${hora(l.ts)}] ${(l.level || "info").toUpperCase()}: ${l.msg}`);
+      const cabecalho = `TradeAI — Mensagens do Bot (${filtro})\nExportado: ${new Date().toLocaleString("pt-PT")}\nTotal: ${linhas.length} eventos\n${"─".repeat(40)}\n`;
+      const texto = cabecalho + linhas.join("\n");
+      try {
+        await navigator.clipboard.writeText(texto);
+        toast(`${linhas.length} mensagens copiadas — cola onde precisares`, "success");
+      } catch {
+        // Fallback: se a clipboard falhar (permissões), descarrega um .txt.
+        try {
+          const blob = new Blob([texto], { type: "text/plain;charset=utf-8" });
+          const url = URL.createObjectURL(blob);
+          const a = document.createElement("a");
+          a.href = url; a.download = `tradeai-mensagens-${Date.now()}.txt`;
+          a.click(); URL.revokeObjectURL(url);
+          toast("Mensagens descarregadas (.txt)", "success");
+        } catch { toast("Falha ao exportar", "error"); }
+      }
+    };
 
     return (
       <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
@@ -3860,10 +3904,16 @@ JSON: {"signals":[{"id":"btc","sinal":"COMPRAR|VENDER|AGUARDAR","razao":"1 frase
               <div style={{ fontSize: 16, fontWeight: 700 }}>🔔 Mensagens do Bot</div>
               <div style={{ fontSize: 11, color: T.muted, marginTop: 4 }}>Eventos de trading e erros. Guardadas 3 dias (apagam-se sozinhas).</div>
             </div>
-            <button onClick={limpar} style={{
-              padding: "8px 16px", borderRadius: 8, border: `1px solid ${T.red}40`,
-              background: `${T.red}15`, color: T.red, fontSize: 12, fontWeight: 600, cursor: "pointer",
-            }}>🗑 Limpar tudo</button>
+            <div style={{ display: "flex", gap: 8 }}>
+              <button onClick={exportar} style={{
+                padding: "8px 16px", borderRadius: 8, border: `1px solid ${T.aLight}40`,
+                background: `${T.aLight}15`, color: T.aLight, fontSize: 12, fontWeight: 600, cursor: "pointer",
+              }}>📋 Exportar</button>
+              <button onClick={limpar} style={{
+                padding: "8px 16px", borderRadius: 8, border: `1px solid ${T.red}40`,
+                background: `${T.red}15`, color: T.red, fontSize: 12, fontWeight: 600, cursor: "pointer",
+              }}>🗑 Limpar tudo</button>
+            </div>
           </div>
           <div style={{ display: "flex", gap: 8, marginTop: 16 }}>
             {[["todos", "Todos"], ["trading", "🛒 Trading"], ["erros", "⚠️ Erros"]].map(([id, lbl]) => (

@@ -1,7 +1,7 @@
 import { initializeApp } from "firebase/app";
 import {
   getFirestore, collection, doc, setDoc, deleteDoc, getDocs,
-  onSnapshot, query, orderBy, limit, serverTimestamp,
+  onSnapshot, query, orderBy, limit, where, serverTimestamp,
 } from "firebase/firestore";
 import {
   getAuth,
@@ -102,12 +102,38 @@ export function watchCommand(uid, id, callback, timeoutMs = 90000) {
   return () => { done = true; clearTimeout(timer); unsub(); };
 }
 export function subscribeTrades(uid, callback) {
-  // limit 150: cobre posições abertas + fechados recentes do dia. Os fechados de
-  // dias anteriores vêm do Arquivo Diário (subscribeArchives), por isso não é
-  // preciso reler 500 trades a cada mudança — poupa leituras Firestore com o bot
-  // a operar (cada abertura/fecho reenviava todos os documentos subscritos).
-  const q = query(userCol(uid, "trades"), orderBy("savedAt", "desc"), limit(150));
-  return onSnapshot(q, snap => callback(snap.docs.map(d => ({ ...d.data(), id: d.id }))));
+  // Duas subscrições combinadas para nunca "perder" uma posição ABERTA:
+  //
+  //  (A) ABERTAS — TODAS, sem limite. São poucas (limitadas por maxPosicoesTotal)
+  //      e é CRÍTICO mostrá-las todas: se uma posição aberta cair fora da janela,
+  //      desaparece do ecrã mas o bot continua a geri-la — não a consegues ver
+  //      nem fechar. Era o bug das posições manuais que "desapareciam" quando o
+  //      bot abria muitos trades novos e empurrava as antigas para fora do top-150.
+  //
+  //  (B) FECHADAS — só as 150 mais recentes. Os fechados de dias anteriores vêm
+  //      do Arquivo Diário (subscribeArchives), por isso não é preciso reler
+  //      centenas a cada mudança — poupa leituras Firestore com o bot a operar.
+  //
+  // Combinamos os dois snapshots e devolvemos a união (sem duplicados).
+  const qOpen   = query(userCol(uid, "trades"), where("status", "==", "ABERTA"));
+  const qClosed = query(userCol(uid, "trades"), orderBy("savedAt", "desc"), limit(150));
+
+  let abertas = [], fechadas = [];
+  const emit = () => {
+    const ids = new Set(abertas.map(t => t.id));
+    // União: todas as abertas + fechadas recentes que não estejam já incluídas.
+    const merged = [...abertas, ...fechadas.filter(t => !ids.has(t.id))];
+    callback(merged);
+  };
+  const unsubOpen = onSnapshot(qOpen, snap => {
+    abertas = snap.docs.map(d => ({ ...d.data(), id: d.id }));
+    emit();
+  });
+  const unsubClosed = onSnapshot(qClosed, snap => {
+    fechadas = snap.docs.map(d => ({ ...d.data(), id: d.id }));
+    emit();
+  });
+  return () => { unsubOpen(); unsubClosed(); };
 }
 // Eventos do bot (tab Mensagens): docs logs/{dia}, cada um com items[]. Lê os
 // últimos 5 dias por data desc e junta tudo num array ordenado por tempo.
