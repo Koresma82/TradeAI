@@ -329,6 +329,7 @@ export default function TradeAI() {
   // para Live (paper/real), o histórico mostra logo os trades desse modo.
   useEffect(() => { setHistTab(simMode ? "sim" : "live"); }, [simMode]);
   const [botLogs, setBotLogs] = useState([]); // eventos publicados pelo bot (tab Mensagens)
+  const [regimeLog, setRegimeLog] = useState([]); // registo de liga/desliga do Modo Dinâmico
   const [priceStats, setPriceStats] = useState({}); // estatísticas históricas por ativo (máx/mín/médias)
   const [msgFiltro, setMsgFiltro] = useState("todos"); // filtro do tab Mensagens
   // ── Day Trading ──
@@ -348,6 +349,7 @@ export default function TradeAI() {
   const [histSortKey, setHistSortKey] = useState("abertura"); // coluna de ordenação do histórico
   const [histSortDir, setHistSortDir] = useState("desc");     // "asc" | "desc"
   const [histOpenDay, setHistOpenDay] = useState(null); // dia de arquivo expandido no histórico
+  const [histCorte, setHistCorte] = useState("");       // data de corte p/ comparar antes vs depois (ex.: dia que ligaste o regime)
   const [arqSortKey, setArqSortKey] = useState("pnl");   // coluna de sort dentro de um dia
   const [arqSortDir, setArqSortDir] = useState("desc");
   const [simStartedAt, setSimStartedAt] = useState(null); // timestamp início
@@ -3601,6 +3603,190 @@ JSON: {"signals":[{"id":"btc","sinal":"COMPRAR|VENDER|AGUARDAR","razao":"1 frase
                 <div style={{ fontSize: 11, color: acc.vColor, fontWeight: 600 }}>{acc.veredito}</div>
               </div>
             )}
+            {(() => {
+              // ── Comparação ANTES vs DEPOIS de uma data de corte ───────────────
+              // Para medir o efeito de uma mudança (ex.: ligar o Modo Dinâmico, ou
+              // o deploy das correções), define-se uma data; a app calcula a
+              // expectativa por trade de cada lado. É a forma honesta de ver se uma
+              // alteração ajudou: comparar como-com-como, sem marcar cada trade.
+              const expDe = (dias) => {
+                const all = dias.flatMap(a => (a.trades || []).filter(t => typeof t.pnl === "number"));
+                if (!all.length) return null;
+                const net = all.reduce((s, t) => s + t.pnl, 0);
+                const wins = all.filter(t => t.pnl > 0).length;
+                return {
+                  n: all.length, dias: dias.length, net: +net.toFixed(2),
+                  exp: +(net / all.length).toFixed(3),
+                  wr: +(wins / all.length * 100).toFixed(0),
+                };
+              };
+              // archForTab vem ordenado desc (mais recente primeiro). 'day' é "YYYY-MM-DD".
+              const antes  = histCorte ? archForTab.filter(a => (a.day || "") <  histCorte) : [];
+              const depois = histCorte ? archForTab.filter(a => (a.day || "") >= histCorte) : [];
+              const eA = expDe(antes), eD = expDe(depois);
+              const Lado = (titulo, e, cor) => (
+                <div style={{ flex: 1, padding: "10px 12px", borderRadius: 10, background: `${cor}0E`, border: `1px solid ${cor}33` }}>
+                  <div style={{ fontSize: 10, color: T.muted, marginBottom: 6 }}>{titulo}</div>
+                  {e ? <>
+                    <div style={{ fontSize: 18, fontWeight: 800, color: e.exp >= 0 ? T.green : T.red }}>
+                      {sign(e.exp)}€{Math.abs(e.exp).toFixed(2)}<span style={{ fontSize: 10, color: T.muted, fontWeight: 600 }}> /trade</span>
+                    </div>
+                    <div style={{ fontSize: 9, color: T.muted, marginTop: 2 }}>
+                      {e.dias} dias · {e.n} trades · {e.wr}% win · P&L {sign(e.net)}€{Math.abs(e.net).toFixed(2)}
+                    </div>
+                  </> : <div style={{ fontSize: 11, color: T.muted }}>sem dados neste lado</div>}
+                </div>
+              );
+              const delta = (eA && eD) ? +(eD.exp - eA.exp).toFixed(3) : null;
+              // ── Comparação DIRETA pelo carimbo do trade ───────────────────────
+              // O bot marca cada trade com regimeDinamico (true/false) no momento
+              // da abertura. Aqui agrupamos por esse carimbo — é o método mais
+              // direto: não depende de datas, lê o estado real de cada trade.
+              const allTrades = archForTab.flatMap(a => (a.trades || []).filter(t => typeof t.pnl === "number"));
+              const comCarimbo = allTrades.filter(t => typeof t.regimeDinamico === "boolean");
+              const expTrades = (arr) => {
+                if (!arr.length) return null;
+                const net = arr.reduce((s, t) => s + t.pnl, 0);
+                const wins = arr.filter(t => t.pnl > 0).length;
+                return { n: arr.length, net: +net.toFixed(2), exp: +(net / arr.length).toFixed(3), wr: +(wins / arr.length * 100).toFixed(0) };
+              };
+              const eOn  = expTrades(comCarimbo.filter(t => t.regimeDinamico === true));
+              const eOff = expTrades(comCarimbo.filter(t => t.regimeDinamico === false));
+              const deltaTag = (eOn && eOff) ? +(eOn.exp - eOff.exp).toFixed(3) : null;
+              const LadoT = (titulo, e, cor) => (
+                <div style={{ flex: 1, padding: "10px 12px", borderRadius: 10, background: `${cor}0E`, border: `1px solid ${cor}33` }}>
+                  <div style={{ fontSize: 10, color: T.muted, marginBottom: 6 }}>{titulo}</div>
+                  {e ? <>
+                    <div style={{ fontSize: 18, fontWeight: 800, color: e.exp >= 0 ? T.green : T.red }}>
+                      {sign(e.exp)}€{Math.abs(e.exp).toFixed(2)}<span style={{ fontSize: 10, color: T.muted, fontWeight: 600 }}> /trade</span>
+                    </div>
+                    <div style={{ fontSize: 9, color: T.muted, marginTop: 2 }}>
+                      {e.n} trades · {e.wr}% win · P&L {sign(e.net)}€{Math.abs(e.net).toFixed(2)}
+                    </div>
+                  </> : <div style={{ fontSize: 11, color: T.muted }}>ainda sem trades</div>}
+                </div>
+              );
+              return (
+              <div style={{ marginBottom: 16, padding: "14px 16px", borderRadius: 12, background: `${T.accent}08`, border: `1px solid ${T.accent}22` }}>
+                <div style={{ fontSize: 12, fontWeight: 700, marginBottom: 4 }}>⚖️ Modo Dinâmico — com vs sem</div>
+                {comCarimbo.length > 0 ? (
+                  <>
+                    <div style={{ fontSize: 10, color: T.muted, marginBottom: 10, lineHeight: 1.5 }}>
+                      Comparação direta pelo estado gravado em cada trade no momento da abertura. {comCarimbo.length} de {allTrades.length} trades têm o carimbo.
+                    </div>
+                    <div style={{ display: "flex", gap: 10 }}>
+                      {LadoT("COM modo dinâmico", eOn, T.accent)}
+                      {LadoT("SEM modo dinâmico", eOff, T.muted)}
+                    </div>
+                    {deltaTag !== null && (
+                      <div style={{ marginTop: 10, fontSize: 12, fontWeight: 700, color: deltaTag >= 0 ? T.green : T.red, textAlign: "center" }}>
+                        {deltaTag >= 0 ? "▲" : "▼"} {sign(deltaTag)}€{Math.abs(deltaTag).toFixed(2)}/trade {deltaTag >= 0 ? "melhor" : "pior"} COM o modo dinâmico
+                        <div style={{ fontSize: 9, color: T.muted, fontWeight: 400, marginTop: 2 }}>
+                          {(eOn.n < 20 || eOff.n < 20) ? "⚠ amostra pequena — precisa de mais trades para ser fiável" : "amostra razoável"}
+                        </div>
+                      </div>
+                    )}
+                  </>
+                ) : (
+                  <div style={{ fontSize: 11, color: T.muted, fontStyle: "italic" }}>
+                    Ainda não há trades com o carimbo do regime. Os trades novos (abertos depois deste deploy do bot) vão ser marcados automaticamente — volta aqui depois de o sistema operar mais um pouco.
+                  </div>
+                )}
+              </div>
+              );
+            })()}
+            {(() => {
+              // ── Comparação alternativa por DATA de corte (método secundário) ──
+              const expDe = (dias) => {
+                const all = dias.flatMap(a => (a.trades || []).filter(t => typeof t.pnl === "number"));
+                if (!all.length) return null;
+                const net = all.reduce((s, t) => s + t.pnl, 0);
+                const wins = all.filter(t => t.pnl > 0).length;
+                return {
+                  n: all.length, dias: dias.length, net: +net.toFixed(2),
+                  exp: +(net / all.length).toFixed(3),
+                  wr: +(wins / all.length * 100).toFixed(0),
+                };
+              };
+              // archForTab vem ordenado desc (mais recente primeiro). 'day' é "YYYY-MM-DD".
+              const antes  = histCorte ? archForTab.filter(a => (a.day || "") <  histCorte) : [];
+              const depois = histCorte ? archForTab.filter(a => (a.day || "") >= histCorte) : [];
+              const eA = expDe(antes), eD = expDe(depois);
+              const Lado = (titulo, e, cor) => (
+                <div style={{ flex: 1, padding: "10px 12px", borderRadius: 10, background: `${cor}0E`, border: `1px solid ${cor}33` }}>
+                  <div style={{ fontSize: 10, color: T.muted, marginBottom: 6 }}>{titulo}</div>
+                  {e ? <>
+                    <div style={{ fontSize: 18, fontWeight: 800, color: e.exp >= 0 ? T.green : T.red }}>
+                      {sign(e.exp)}€{Math.abs(e.exp).toFixed(2)}<span style={{ fontSize: 10, color: T.muted, fontWeight: 600 }}> /trade</span>
+                    </div>
+                    <div style={{ fontSize: 9, color: T.muted, marginTop: 2 }}>
+                      {e.dias} dias · {e.n} trades · {e.wr}% win · P&L {sign(e.net)}€{Math.abs(e.net).toFixed(2)}
+                    </div>
+                  </> : <div style={{ fontSize: 11, color: T.muted }}>sem dados neste lado</div>}
+                </div>
+              );
+              const delta = (eA && eD) ? +(eD.exp - eA.exp).toFixed(3) : null;
+              return (
+              <div style={{ marginBottom: 16, padding: "14px 16px", borderRadius: 12, background: `${T.accent}08`, border: `1px solid ${T.accent}22` }}>
+                <div style={{ fontSize: 12, fontWeight: 700, marginBottom: 4 }}>⚖️ Comparar por data (alternativa)</div>
+                <div style={{ fontSize: 10, color: T.muted, marginBottom: 10, lineHeight: 1.5 }}>
+                  Define a data em que mudaste algo (ex.: ligaste o Modo Dinâmico) para ver se a expectativa por trade melhorou. Compara os dias antes da data com os dias a partir dela.
+                </div>
+                <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 12, flexWrap: "wrap" }}>
+                  <span style={{ fontSize: 10, color: T.muted }}>Data de corte:</span>
+                  <input type="date" value={histCorte} onChange={e => setHistCorte(e.target.value)}
+                    style={{ background: T.base, border: `1px solid ${T.border}`, borderRadius: 8, color: T.text, fontSize: 12, padding: "4px 8px", colorScheme: "dark" }} />
+                  {histCorte && <button onClick={() => setHistCorte("")} style={{ background: "transparent", border: "none", color: T.muted, fontSize: 11, cursor: "pointer", textDecoration: "underline" }}>limpar</button>}
+                  {/* Atalho: usar a data do último liga/desliga registado do Modo Dinâmico. */}
+                  {regimeLog.length > 0 && (
+                    <button onClick={() => setHistCorte(regimeLog[0].data)} style={{
+                      background: `${T.accent}18`, border: `1px solid ${T.accent}44`, borderRadius: 8,
+                      color: T.aLight, fontSize: 10, fontWeight: 600, padding: "4px 10px", cursor: "pointer",
+                    }}>
+                      usar último evento ({regimeLog[0].data})
+                    </button>
+                  )}
+                </div>
+                {/* Histórico de liga/desliga do Modo Dinâmico — ancora a comparação em factos. */}
+                {regimeLog.length > 0 && (
+                  <div style={{ marginBottom: 12, padding: "8px 12px", borderRadius: 8, background: `${T.base}`, border: `1px solid ${T.border}` }}>
+                    <div style={{ fontSize: 9, color: T.muted, textTransform: "uppercase", letterSpacing: "0.06em", marginBottom: 6 }}>📊 Registo do Modo Dinâmico</div>
+                    <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+                      {regimeLog.slice(0, 5).map((ev) => (
+                        <div key={ev.id} style={{ fontSize: 10, color: T.muted, display: "flex", justifyContent: "space-between" }}>
+                          <span>
+                            <span style={{ color: ev.estado ? T.green : T.red, fontWeight: 700 }}>
+                              {ev.estado ? "● LIGADO" : "○ DESLIGADO"}
+                            </span>
+                            <span style={{ color: T.muted }}> · {ev.modo}</span>
+                          </span>
+                          <span>{(() => { try { return new Date(ev.ts).toLocaleString("pt-PT"); } catch { return ev.data; } })()}</span>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
+                {!histCorte ? (
+                  <div style={{ fontSize: 11, color: T.muted, fontStyle: "italic" }}>Escolhe uma data acima para ver a comparação.</div>
+                ) : (
+                  <>
+                    <div style={{ display: "flex", gap: 10 }}>
+                      {Lado(`Antes de ${histCorte}`, eA, T.muted)}
+                      {Lado(`A partir de ${histCorte}`, eD, T.accent)}
+                    </div>
+                    {delta !== null && (
+                      <div style={{ marginTop: 10, fontSize: 12, fontWeight: 700, color: delta >= 0 ? T.green : T.red, textAlign: "center" }}>
+                        {delta >= 0 ? "▲" : "▼"} {sign(delta)}€{Math.abs(delta).toFixed(2)}/trade {delta >= 0 ? "melhor" : "pior"} depois da mudança
+                        <div style={{ fontSize: 9, color: T.muted, fontWeight: 400, marginTop: 2 }}>
+                          {(eA.n < 20 || eD.n < 20) ? "⚠ amostra pequena — precisa de mais trades para ser fiável" : "amostra razoável"}
+                        </div>
+                      </div>
+                    )}
+                  </>
+                )}
+              </div>
+              );
+            })()}
             <div style={{ fontSize: 12, fontWeight: 700, marginBottom: 12 }}>🗓 Arquivo Diário ({archForTab.length} dias)</div>
             <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
               {archForTab.map((a) => {
@@ -4321,12 +4507,26 @@ pm2 save && pm2 startup`}</CodeBlock>
 
     const save = () => {
       const finalSettings = { ...local };
+      // Deteta mudança do Modo Dinâmico face ao que estava guardado, para registar
+      // o evento (liga/desliga) na base de dados — assim a comparação "antes vs
+      // depois" fica ancorada em factos e não depende de te lembrares da data.
+      const antesRegime = !!currentSettings?.regimeDinamico;
+      const depoisRegime = !!finalSettings.regimeDinamico;
+      const regimeMudou = antesRegime !== depoisRegime;
       setCurrentSettings(finalSettings);
       setSettingsLocal(null);
-      if (user) import("./firebase.js").then(({ saveSetting }) =>
-        saveSetting(user.uid, docKey, finalSettings).catch(()=>{}));
+      if (user) import("./firebase.js").then(({ saveSetting, logRegimeToggle }) => {
+        saveSetting(user.uid, docKey, finalSettings).catch(()=>{});
+        if (regimeMudou) {
+          const modo = isSimTab ? "sim" : isRealTab ? "real" : "paper";
+          logRegimeToggle(user.uid, { estado: depoisRegime, modo }).catch(()=>{});
+        }
+      });
       const nomeTab = isSimTab ? "simulação" : isRealTab ? "REAL" : "paper";
       toast(`✅ Definições ${nomeTab} guardadas! (Perfil ${finalSettings.riscoPerfil}: SL ${finalSettings.stopLossPadrao}% / TP ${finalSettings.takeProfitPadrao}%)`, "success");
+      if (regimeMudou) {
+        toast(`📊 Modo Dinâmico ${depoisRegime ? "LIGADO" : "DESLIGADO"} — registado para comparação`, "info");
+      }
     };
     const info = perfilInfo[local.riscoPerfil];
     const amountPreview = local.modoValor === "fixo"
@@ -5682,8 +5882,8 @@ JSON puro:
       });
     }).catch(() => {});
     // Carregar estratégias guardadas
-    let unsubStrat = null, unsubSettings = null, unsubLive = null, unsubLiveLegacy = null, unsubReal = null, unsubCtrl = null, unsubArch = null, unsubDt = null, unsubBot = null, unsubSig = null, unsubDaily = null, unsubBrokers = null, unsubLogs = null, unsubPriceStats = null;
-    import("./firebase.js").then(({ subscribeStrategies, subscribeSetting: subSet, subscribeArchives, subscribeLogs }) => {
+    let unsubStrat = null, unsubSettings = null, unsubLive = null, unsubLiveLegacy = null, unsubReal = null, unsubCtrl = null, unsubArch = null, unsubDt = null, unsubBot = null, unsubSig = null, unsubDaily = null, unsubBrokers = null, unsubLogs = null, unsubPriceStats = null, unsubRegimeLog = null;
+    import("./firebase.js").then(({ subscribeStrategies, subscribeSetting: subSet, subscribeArchives, subscribeLogs, subscribeRegimeLog }) => {
       if (subscribeArchives) {
         unsubDaily = subscribeArchives(uid2, (arcs) => {
           if (Array.isArray(arcs)) setDailyArchives(arcs);
@@ -5691,6 +5891,9 @@ JSON puro:
       }
       if (subscribeLogs) {
         unsubLogs = subscribeLogs(uid2, (logs) => { if (Array.isArray(logs)) setBotLogs(logs); });
+      }
+      if (subscribeRegimeLog) {
+        unsubRegimeLog = subscribeRegimeLog(uid2, (evs) => { if (Array.isArray(evs)) setRegimeLog(evs); });
       }
       if (subscribeStrategies) {
         unsubStrat = subscribeStrategies(uid2, (strats) => {
@@ -5767,7 +5970,7 @@ JSON puro:
         if (val && typeof val === "object" && botActiveRef.current) setMarketSignals(val);
       });
     }).catch(() => {});
-    return () => { unsubTrades?.(); unsubBal?.(); unsubBalLive?.(); unsubTradeable?.(); unsubMktPrices?.(); unsubStrat?.(); unsubSettings?.(); unsubLive?.(); unsubLiveLegacy?.(); unsubReal?.(); unsubCtrl?.(); unsubArch?.(); unsubDt?.(); unsubBot?.(); unsubSig?.(); unsubDaily?.(); unsubBrokers?.(); unsubLogs?.(); unsubPriceStats?.(); };
+    return () => { unsubTrades?.(); unsubBal?.(); unsubBalLive?.(); unsubTradeable?.(); unsubMktPrices?.(); unsubStrat?.(); unsubSettings?.(); unsubLive?.(); unsubLiveLegacy?.(); unsubReal?.(); unsubCtrl?.(); unsubArch?.(); unsubDt?.(); unsubBot?.(); unsubSig?.(); unsubDaily?.(); unsubBrokers?.(); unsubLogs?.(); unsubPriceStats?.(); unsubRegimeLog?.(); };
   }, [user]);
 
   // ── Persistência: guardar trade quando aberto ─────────────────────────────

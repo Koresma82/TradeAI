@@ -177,3 +177,24 @@ export function subscribeArchives(uid, callback) {
   const q = query(userCol(uid, "archives"), orderBy("day", "desc"), limit(90));
   return onSnapshot(q, snap => callback(snap.docs.map(d => ({ ...d.data(), id: d.id }))));
 }
+
+// ── Registo de mudanças do Modo Dinâmico (regime) ───────────────────────────────
+// Sempre que se liga/desliga o Modo Dinâmico, gravamos um evento com timestamp.
+// Assim a comparação "antes vs depois" fica ancorada em factos (não na memória):
+// dá para ver exatamente em que dia/hora o modo passou a ON ou OFF, e em que modo
+// (sim/paper/real). O id do doc é o ISO do instante (ordenável e único).
+export async function logRegimeToggle(uid, { estado, modo }) {
+  const ts = Date.now();
+  const id = new Date(ts).toISOString();
+  await setDoc(userDoc(uid, "regimeLog", id), {
+    estado,                       // true = ligado, false = desligado
+    modo,                         // "sim" | "paper" | "real"
+    ts,                           // epoch ms
+    data: id.split("T")[0],       // "YYYY-MM-DD" (para casar com a data de corte)
+    savedAt: serverTimestamp(),
+  });
+}
+export function subscribeRegimeLog(uid, callback) {
+  const q = query(userCol(uid, "regimeLog"), orderBy("ts", "desc"), limit(50));
+  return onSnapshot(q, snap => callback(snap.docs.map(d => ({ ...d.data(), id: d.id }))));
+}
