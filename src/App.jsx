@@ -421,6 +421,7 @@ export default function TradeAI() {
     maxValorTrade:       100,   // teto € por trade (enviado ao bot)
     maxPosicoesTotal:    40,    // limite global de posições abertas (enviado ao bot)
     rotacaoAtiva:        false,
+    regimeDinamico:      false,  // ajustar exposição automaticamente ao regime de mercado
     stopLossPadrao:      6,
     takeProfitPadrao:    12,
     autoInvestir:        false,
@@ -4650,6 +4651,56 @@ pm2 save && pm2 startup`}</CodeBlock>
                 <span style={{ fontSize: 12, color: local.rotacaoAtiva ? T.gold : T.muted, fontWeight: 700 }}>{local.rotacaoAtiva ? "ATIVADA" : "Desativada"}</span>
               </div>
             </div>
+            {(() => {
+              // Toggle do Modo Dinâmico por regime de mercado. Mostra também o
+              // regime atual lido do bot (alta/neutro/baixa) e o que está a fazer.
+              const reg = botStatus?.regime;
+              const estado = reg?.estado || "—";
+              const corReg = estado === "baixa" ? T.red : estado === "alta" ? T.green : T.gold;
+              const rotulo = { alta: "🔼 ALTA", neutro: "➖ NEUTRO", baixa: "🔻 BAIXA" }[estado] || "—";
+              return (
+              <div style={{ background: `${T.accent}0a`, border: `1px solid ${T.accent}22`, borderRadius: 10, padding: "14px 16px" }}>
+                <div style={{ fontSize: 11, fontWeight: 600, marginBottom: 4 }}>📊 Modo Dinâmico (regime de mercado)</div>
+                <div style={{ fontSize: 10, color: T.muted, marginBottom: 12, lineHeight: 1.5 }}>
+                  Reduz automaticamente a exposição (menos posições, menor valor) e exige mais confiança quando o mercado está em queda. Deteta o regime por BTC + SPY vs média de 50 dias. Nunca aumenta além dos teus limites.
+                </div>
+                <div onClick={() => {
+                  if (!local.regimeDinamico) {
+                    setConfirmModal({
+                      icon: "📊",
+                      title: "Ativar Modo Dinâmico?",
+                      message: "O bot vai ajustar a exposição automaticamente conforme o regime de mercado:",
+                      lines: [
+                        "Em mercado de BAIXA: metade das posições, 60% do valor, +8% de confiança exigida",
+                        "Em mercado NEUTRO: ligeira cautela (80% das posições)",
+                        "Em mercado de ALTA: usa os teus limites normais",
+                        "Não mexe nos teus SL/TP — só na exposição",
+                        "Podes desligar a qualquer momento e voltar aos limites fixos",
+                      ],
+                      confirmLabel: "Ativar modo dinâmico",
+                      onConfirm: () => upd("regimeDinamico", true),
+                    });
+                  } else {
+                    upd("regimeDinamico", false);
+                  }
+                }} style={{ display: "flex", alignItems: "center", gap: 10, cursor: "pointer" }}>
+                  <div style={{ width: 44, height: 24, borderRadius: 12, background: local.regimeDinamico ? T.accent : "rgba(255,255,255,0.1)", position: "relative", transition: "all 0.2s" }}>
+                    <div style={{ position: "absolute", top: 3, left: local.regimeDinamico ? 22 : 2, width: 18, height: 18, borderRadius: "50%", background: "#fff", transition: "left 0.2s" }} />
+                  </div>
+                  <span style={{ fontSize: 12, color: local.regimeDinamico ? T.accent : T.muted, fontWeight: 700 }}>{local.regimeDinamico ? "ATIVADO" : "Desativado"}</span>
+                </div>
+                {local.regimeDinamico && reg && (
+                  <div style={{ marginTop: 12, paddingTop: 12, borderTop: `1px solid ${T.border}`, display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+                    <span style={{ fontSize: 10, color: T.muted }}>Regime atual:</span>
+                    <span style={{ fontSize: 12, fontWeight: 800, color: corReg }}>{rotulo}</span>
+                  </div>
+                )}
+                {local.regimeDinamico && reg?.detalhe && (
+                  <div style={{ fontSize: 9, color: T.muted, marginTop: 4, lineHeight: 1.4 }}>{reg.detalhe}</div>
+                )}
+              </div>
+              );
+            })()}
           </div>
         </Glass>
 
