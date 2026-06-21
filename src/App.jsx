@@ -907,7 +907,65 @@ export default function TradeAI() {
     };
   })();
 
-  // Conjunto de ativos onde tens posição aberta (modo ativo) — usado para validar sinais VENDER
+  // ── Perfil recomendado: deriva dos TEUS números reais, não de opinião ─────────
+  // A ideia: cada perfil precisa de um win rate mínimo para empatar (breakeven).
+  // O teu win rate REAL observado em paper diz quais perfis são sequer viáveis.
+  // Recomendamos o perfil viável com melhor expectativa esperada, dado o teu WR.
+  // Atualiza-se sozinho à medida que acumulas trades — é honesto e adaptativo.
+  const perfilRecomendado = (() => {
+    const CUSTO = 0.2; // % round-trip (comissão + slippage estimado)
+    const PERFIS = {
+      conservador: { sl: 4, tp: 8,  compra: 2.5, label: "Conservador", emoji: "🛡️" },
+      moderado:    { sl: 6, tp: 12, compra: 1.5, label: "Moderado",     emoji: "⚖️" },
+      agressivo:   { sl: 9, tp: 18, compra: 0.8, label: "Agressivo",    emoji: "🚀" },
+      scalper:     { sl: 3, tp: 4,  compra: 1.0, label: "Scalper",      emoji: "🎯" },
+      equilibrado: { sl: 5, tp: 6,  compra: 1.5, label: "Equilibrado",  emoji: "⚡" },
+      volatil:     { sl: 8, tp: 10, compra: 2.0, label: "Cripto Volátil",emoji: "🌊" },
+    };
+    const breakeven = (sl, tp) => ((sl + CUSTO) / (sl + tp)) * 100; // % WR p/ empatar
+    const wrReal = tradeStats.count > 0 ? tradeStats.winRate : null; // % observado
+    const n = tradeStats.count;
+
+    // Para cada perfil, expectativa ESPERADA usando o TEU win rate real:
+    //   exp = WR·avgWin − (1−WR)·avgLoss − custo
+    // Sem avgWin/avgLoss reais (poucos trades), usamos os TP/SL do perfil como proxy.
+    const avgW = tradeStats.avgWin  || null;
+    const avgL = tradeStats.avgLoss || null;
+    const scored = Object.entries(PERFIS).map(([id, p]) => {
+      const be = breakeven(p.sl, p.tp);
+      // Expectativa esperada por trade (em % do valor investido), dado o WR real.
+      // Se temos avgWin/avgLoss reais (€), usamo-los; senão, proxy pelos TP/SL.
+      let expPct;
+      if (wrReal != null) {
+        const wr = wrReal / 100;
+        if (avgW != null && avgL != null && tradeStats.count >= 10) {
+          // Em €: normaliza por valor médio (proxy: avgWin+avgLoss serve de escala)
+          expPct = wr * p.tp - (1 - wr) * p.sl - CUSTO; // usa TP/SL do perfil c/ WR real
+        } else {
+          expPct = wr * p.tp - (1 - wr) * p.sl - CUSTO;
+        }
+      } else {
+        expPct = null;
+      }
+      const viavel = wrReal != null ? wrReal >= be : null;
+      return { id, ...p, breakeven: be, expPct, viavel };
+    });
+
+    // Escolha: entre os viáveis, o de maior expectativa. Se nenhum viável, o de
+    // menor breakeven (o menos exigente — o "menos mau" dado o WR atual).
+    let escolha;
+    if (wrReal == null || n < 5) {
+      escolha = null; // dados insuficientes
+    } else {
+      const viaveis = scored.filter(s => s.viavel);
+      escolha = viaveis.length
+        ? viaveis.reduce((a, b) => (b.expPct > a.expPct ? b : a))
+        : scored.reduce((a, b) => (b.breakeven < a.breakeven ? b : a));
+    }
+    return { escolha, scored, wrReal, n, atual: (liveSettings.riscoPerfil || "moderado").toLowerCase() };
+  })();
+
+
   const heldAssetIds = new Set(activePositions.map(p => p.assetId));
   // VENDER só faz sentido se tiveres o ativo; caso contrário mostra AGUARDAR
   const normSignal = (assetId, sinal) =>
@@ -1322,6 +1380,90 @@ JSON puro — inclui TODOS os ativos relevantes de TODAS as categorias:
             <div style={{ fontSize: 9, color: T.muted, marginTop: 4 }}>~€0.007/chamada</div>
           </Glass>
         </div>
+
+        {/* ── Perfil Recomendado (com base nos teus números reais) ── */}
+        {(() => {
+          const pr = perfilRecomendado;
+          const corPerfil = p => ({ conservador: T.green, scalper: T.green, moderado: T.blue,
+            equilibrado: T.blue, volatil: T.gold, agressivo: T.red }[p] || T.blue);
+
+          // Sem dados suficientes: card informativo, sem cravar perfil.
+          if (!pr.escolha) {
+            return (
+              <Glass style={{ padding: "18px 22px", background: `${T.blue}08`, border: `1px solid ${T.blue}22` }}>
+                <div style={{ fontSize: 13, fontWeight: 700, marginBottom: 6 }}>🎯 Perfil Recomendado</div>
+                <div style={{ fontSize: 11, color: T.muted, lineHeight: 1.6 }}>
+                  Ainda sem trades fechados suficientes ({pr.n}/5 mínimo) para recomendar com base nos teus números.
+                  À medida que acumulas trades em paper, este card calcula automaticamente qual perfil é viável para o teu win rate real.
+                  Para já, podes correr o backtester sobre histórico para escolher com dados.
+                </div>
+              </Glass>
+            );
+          }
+
+          const e = pr.escolha;
+          const ehAtual = e.id === pr.atual;
+          const nenhumViavel = !pr.scored.some(s => s.viavel);
+          return (
+            <Glass style={{ padding: "20px 24px", background: `${corPerfil(e.id)}0c`, border: `1px solid ${corPerfil(e.id)}33` }}>
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 14, flexWrap: "wrap", gap: 10 }}>
+                <div>
+                  <div style={{ fontSize: 13, fontWeight: 700, marginBottom: 4 }}>🎯 Perfil Recomendado</div>
+                  <div style={{ fontSize: 10, color: T.muted, lineHeight: 1.5 }}>
+                    Calculado a partir do teu win rate real ({pr.wrReal.toFixed(0)}%) sobre {pr.n} trades fechados.
+                  </div>
+                </div>
+                <div style={{ textAlign: "right" }}>
+                  <div style={{ fontSize: 28 }}>{e.emoji}</div>
+                  <div style={{ fontSize: 16, fontWeight: 800, color: corPerfil(e.id) }}>{e.label}</div>
+                </div>
+              </div>
+
+              {nenhumViavel && (
+                <div style={{ fontSize: 10.5, color: T.red, marginBottom: 12, lineHeight: 1.55, background: `${T.red}10`, padding: "10px 12px", borderRadius: 8 }}>
+                  ⚠️ Com o teu win rate atual ({pr.wrReal.toFixed(0)}%), <b>nenhum perfil</b> tem expectativa positiva matematicamente —
+                  todos precisam de mais acertos do que tens. O <b>{e.label}</b> é o <b>menos exigente</b> (precisa de {e.breakeven.toFixed(0)}% para empatar),
+                  mas o verdadeiro problema é o win rate baixo, não o perfil. Reduzir trades marginais e melhorar a seleção de entradas é o que mexe a agulha.
+                </div>
+              )}
+
+              <div style={{ display: "grid", gridTemplateColumns: "repeat(3,1fr)", gap: 14, marginBottom: 14 }}>
+                {[
+                  { l: "SL / TP", v: `${e.sl}% / ${e.tp}%`, c: T.aLight },
+                  { l: "WR p/ empatar", v: `${e.breakeven.toFixed(0)}%`, c: e.breakeven >= 40 ? T.red : e.breakeven >= 33 ? T.gold : T.green },
+                  { l: "Teu WR real", v: `${pr.wrReal.toFixed(0)}%`, c: pr.wrReal >= e.breakeven ? T.green : T.red },
+                ].map(item => (
+                  <div key={item.l}>
+                    <div style={{ fontSize: 9, color: T.muted, letterSpacing: "0.1em", textTransform: "uppercase", marginBottom: 4 }}>{item.l}</div>
+                    <div style={{ fontSize: 17, fontWeight: 700, color: item.c }}>{item.v}</div>
+                  </div>
+                ))}
+              </div>
+
+              <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10, flexWrap: "wrap" }}>
+                <div style={{ fontSize: 10, color: T.muted }}>
+                  {ehAtual
+                    ? `Já estás neste perfil. ${nenhumViavel ? "Mas vê o aviso acima." : "É a escolha matematicamente mais sólida para os teus números."}`
+                    : `Estás em ${pr.atual}. Mudar para ${e.label} alinha o perfil com o teu win rate real.`}
+                </div>
+                {!ehAtual && (
+                  <button onClick={() => {
+                    const docKey = botModoReal ? "realSettings" : "paperSettings";
+                    const novo = { ...liveSettings, riscoPerfil: e.id, stopLossPadrao: e.sl, takeProfitPadrao: e.tp };
+                    if (user) import("./firebase.js").then(({ saveSetting }) => {
+                      saveSetting(user.uid, docKey, novo).catch(() => {});
+                    });
+                    toast(`🎯 Perfil alterado para ${e.label} (SL ${e.sl}% / TP ${e.tp}%)`, "success");
+                  }} style={{
+                    padding: "9px 18px", borderRadius: 9, border: `1px solid ${corPerfil(e.id)}`,
+                    background: `${corPerfil(e.id)}1a`, color: corPerfil(e.id), fontWeight: 700,
+                    fontSize: 12, cursor: "pointer",
+                  }}>Aplicar {e.label}</button>
+                )}
+              </div>
+            </Glass>
+          );
+        })()}
 
         {/* ── Estatísticas avançadas + curva de equity ── */}
         {tradeStats.count > 0 && (
