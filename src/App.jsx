@@ -386,13 +386,6 @@ export default function TradeAI() {
   const [tab, setTab]             = useState(typeof window !== "undefined" && window.innerWidth < 820 ? "resumo" : "dashboard");
   // Resumo é um separador só-mobile: num ecrã grande, cai no Dashboard.
   useEffect(() => { if (!isMobile && tab === "resumo") setTab("dashboard"); }, [isMobile, tab]);
-  // Se o utilizador está num separador de trading ativo e desliga o AI Trade,
-  // volta ao início (senão ficaria numa página agora escondida).
-  useEffect(() => {
-    const flagDe = { strategies: "aiEstrategias", daytrading: "aiDayTrading", ai: "aiManualAutonomo" };
-    const flag = flagDe[tab];
-    if (flag && !liveSettings.aiTradeAtivo && !liveSettings[flag]) setTab("dashboard");
-  }, [liveSettings.aiTradeAtivo, liveSettings.aiEstrategias, liveSettings.aiDayTrading, liveSettings.aiManualAutonomo, tab]);
   const tabRef = useRef("dashboard");
   const [balance, setBalance]     = useState(INIT_BAL);
   const [assets, setAssets]       = useState(() =>
@@ -575,6 +568,14 @@ export default function TradeAI() {
   // paper. É isto que a app usa para sizing/preview quando não está em sim.
   const liveSettings = botModoReal ? realSettings : paperSettings;
   useEffect(() => { liveSettingsRef.current = botModoReal ? realSettings : paperSettings; }, [botModoReal, paperSettings, realSettings]);
+  // Se o utilizador está num separador de trading ativo e desliga a respetiva
+  // fonte, volta ao início (senão ficaria numa página agora escondida). Tem de
+  // estar DEPOIS de liveSettings ser definido (senão dá erro de inicialização).
+  useEffect(() => {
+    const flagDe = { strategies: "aiEstrategias", daytrading: "aiDayTrading", ai: "aiManualAutonomo" };
+    const flag = flagDe[tab];
+    if (flag && !liveSettings.aiTradeAtivo && !liveSettings[flag]) setTab("dashboard");
+  }, [liveSettings.aiTradeAtivo, liveSettings.aiEstrategias, liveSettings.aiDayTrading, liveSettings.aiManualAutonomo, tab]);
   // Rótulo claro e único para qualquer modo do bot — evita mostrar "LIVE"
   // genérico que confunde paper com real. Usar em todo o lado.
   const modoLabelBot = (m) => m === "real" ? "DINHEIRO REAL" : m === "paper" ? "Paper" : m === "sim" ? "Simulação" : "—";
