@@ -3370,6 +3370,156 @@ JSON: {"signals":[{"id":"btc","sinal":"COMPRAR|VENDER|AGUARDAR","razao":"1 frase
     );
   };
 
+  // ── Página de Sugestões: análise dos teus dados → recomendações transparentes ──
+  // Regras FIXAS e explicáveis (não um LLM a adivinhar). Cada sugestão diz o
+  // PORQUÊ, o número que a disparou, e (quando aplicável) tem botão de aplicar.
+  const Sugestoes = () => {
+    const docKey = botModoReal ? "realSettings" : "paperSettings";
+    const aplicar = (patch, msg) => {
+      const novo = { ...liveSettings, ...patch };
+      if (user) import("./firebase.js").then(({ saveSetting }) => saveSetting(user.uid, docKey, novo).catch(() => {}));
+      toast(msg, "success");
+    };
+
+    const n = tradeStats.count;
+    const wr = n > 0 ? tradeStats.winRate : null;
+    const exp = n > 0 ? tradeStats.expectancy : null;
+    const pf = n > 0 ? tradeStats.profitFactor : null;
+    const dd = n > 0 ? tradeStats.maxDD : null;
+    const arq = (dailyArchives || []).filter(a => Array.isArray(a.trades));
+    const ultimoDia = arq[0];
+    const tradesUltimoDia = ultimoDia ? ultimoDia.trades.length : null;
+    const s = liveSettings;
+
+    const sugestoes = [];
+
+    if (n >= 10 && exp != null && exp < 0) {
+      sugestoes.push({
+        sev: "alta", icon: "🚫", titulo: "Não passar a live ainda",
+        facto: `Expectativa de ${sign(exp)}€${Math.abs(exp).toFixed(2)}/trade sobre ${n} trades fechados.`,
+        texto: "Com expectativa negativa, passar a live perde dinheiro real de forma consistente. O backtester confirmou que nenhum perfil tem edge com a lógica atual. A prioridade é mudar a lógica de entrada (testar momentum), não os parâmetros.",
+        acao: null,
+      });
+    }
+
+    if ((s.maxDayTrading || 0) >= 6 || s.rotacaoAtiva) {
+      sugestoes.push({
+        sev: "alta", icon: "⚡", titulo: "Reduzir geração de trades",
+        facto: `Day Trading: ${s.maxDayTrading || 0} posições${s.rotacaoAtiva ? " · Rotação ATIVADA" : ""}${tradesUltimoDia != null ? ` · ${tradesUltimoDia} trades no último dia` : ""}.`,
+        texto: "Day Trading alto + Rotação geram muitos trades. Cada trade tem custo de comissão/slippage; com expectativa negativa, mais trades = perder mais rápido. Reduzir o Day Trading para 3-4 e desligar a Rotação corta o sangramento.",
+        acao: { label: "Aplicar (DT=4, Rotação off)", patch: { maxDayTrading: 4, rotacaoAtiva: false } },
+      });
+    }
+
+    if (s.aiBrain && (s.aiBrainConfianca || 0) < 80) {
+      sugestoes.push({
+        sev: "media", icon: "🤖", titulo: "Subir a confiança do Cérebro AI",
+        facto: `Confiança mínima atual: ${s.aiBrainConfianca || 0}%.`,
+        texto: "O Groq infla confiança (diz 90%+ em ativos parados). A 70%, entram demasiados sinais marginais — os que mais perdem. Subir para 82% filtra as entradas fracas e melhora a qualidade média.",
+        acao: { label: "Aplicar (82%)", patch: { aiBrainConfianca: 82 } },
+      });
+    }
+
+    if (!s.regimeDinamico && (exp == null || exp < 0 || (dd != null && dd > 12))) {
+      sugestoes.push({
+        sev: "media", icon: "📊", titulo: "Ligar o Modo Dinâmico",
+        facto: dd != null ? `Drawdown máximo: ${dd.toFixed(0)}%. Modo Dinâmico: desligado.` : "Modo Dinâmico: desligado.",
+        texto: "A tua lógica perde mais em mercados de baixa (comprar quedas). O Modo Dinâmico reduz exposição automaticamente quando BTC e SPY estão a descer — corta perdas sem precisar de prever nada. É das poucas coisas que ajudam matematicamente já.",
+        acao: { label: "Ligar Modo Dinâmico", patch: { regimeDinamico: true } },
+      });
+    }
+
+    if (perfilRecomendado.escolha && perfilRecomendado.escolha.id !== perfilRecomendado.atual) {
+      const e = perfilRecomendado.escolha;
+      sugestoes.push({
+        sev: "media", icon: "🎯", titulo: `Mudar perfil para ${e.label}`,
+        facto: `Win rate real ${wr != null ? wr.toFixed(0) : "?"}% · perfil atual ${perfilRecomendado.atual} (precisa de ${e.breakeven.toFixed(0)}% para empatar no recomendado).`,
+        texto: `Para o teu win rate atual, o ${e.label} é o perfil matematicamente mais sólido (ou o menos mau). Alinha os SL/TP com a taxa de acerto que tens realmente.`,
+        acao: { label: `Aplicar ${e.label}`, patch: { riscoPerfil: e.id, stopLossPadrao: e.sl, takeProfitPadrao: e.tp } },
+      });
+    }
+
+    if (n < 10) {
+      sugestoes.push({
+        sev: "info", icon: "📈", titulo: "Acumular mais dados",
+        facto: `${n} trades fechados (mínimo ~30 para conclusões fiáveis).`,
+        texto: "As sugestões ganham força com mais trades. Deixa o bot correr em paper e volta aqui — quanto mais trades, mais precisas ficam as recomendações sobre perfil, expectativa e drawdown.",
+        acao: null,
+      });
+    }
+
+    const corSev = { alta: T.red, media: T.gold, info: T.blue };
+    const agora = new Date();
+    const periodo = agora.getHours() < 12 ? "manhã" : agora.getHours() < 18 ? "meio do dia" : "fim do dia";
+
+    return (
+      <div style={{ display: "flex", flexDirection: "column", gap: 16, maxWidth: 900 }}>
+        <Glass style={{ padding: "20px 24px" }}>
+          <div style={{ fontSize: 15, fontWeight: 800, marginBottom: 4 }}>💡 Configurações Sugeridas</div>
+          <div style={{ fontSize: 11, color: T.muted, lineHeight: 1.6 }}>
+            Análise dos teus dados reais ({n} trades fechados) — snapshot de {periodo}, {agora.toLocaleDateString("pt-PT")} {agora.toLocaleTimeString("pt-PT", { hour: "2-digit", minute: "2-digit" })}.
+            Cada sugestão usa regras transparentes sobre os teus números, não palpites de IA. Vê o porquê de cada uma e aplica se concordares.
+          </div>
+        </Glass>
+
+        {n > 0 && (
+          <div className="resp-grid" style={{ display: "grid", gridTemplateColumns: "repeat(4,1fr)", gap: 12 }}>
+            {[
+              { l: "Win Rate", v: `${wr.toFixed(0)}%`, c: wr >= 35 ? T.green : T.red },
+              { l: "Expectativa", v: `${sign(exp)}€${Math.abs(exp).toFixed(2)}`, c: exp >= 0 ? T.green : T.red },
+              { l: "Profit Factor", v: pf === Infinity ? "∞" : pf.toFixed(2), c: pf >= 1 ? T.green : T.red },
+              { l: "Max Drawdown", v: `${dd.toFixed(0)}%`, c: dd <= 15 ? T.green : T.red },
+            ].map(m => (
+              <Glass key={m.l} style={{ padding: "14px 16px" }}>
+                <div style={{ fontSize: 9, color: T.muted, letterSpacing: "0.13em", textTransform: "uppercase", marginBottom: 6 }}>{m.l}</div>
+                <div style={{ fontSize: 22, fontWeight: 700, color: m.c }}>{m.v}</div>
+              </Glass>
+            ))}
+          </div>
+        )}
+
+        {sugestoes.length === 0 ? (
+          <Glass style={{ padding: "24px", textAlign: "center" }}>
+            <div style={{ fontSize: 32, marginBottom: 8 }}>✅</div>
+            <div style={{ fontSize: 13, fontWeight: 700, marginBottom: 4 }}>Sem sugestões críticas neste momento</div>
+            <div style={{ fontSize: 11, color: T.muted }}>A tua configuração está alinhada com os teus dados. Continua a monitorizar.</div>
+          </Glass>
+        ) : (
+          sugestoes.map((sg, i) => (
+            <Glass key={i} style={{ padding: "18px 22px", borderLeft: `3px solid ${corSev[sg.sev]}` }}>
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 12, flexWrap: "wrap" }}>
+                <div style={{ flex: 1, minWidth: 220 }}>
+                  <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 6 }}>
+                    <span style={{ fontSize: 18 }}>{sg.icon}</span>
+                    <span style={{ fontSize: 13, fontWeight: 700 }}>{sg.titulo}</span>
+                    <span style={{ fontSize: 9, fontWeight: 700, color: corSev[sg.sev], textTransform: "uppercase", letterSpacing: "0.08em", padding: "2px 6px", borderRadius: 4, background: `${corSev[sg.sev]}1a` }}>{sg.sev}</span>
+                  </div>
+                  <div style={{ fontSize: 11, fontWeight: 600, color: T.aLight, marginBottom: 6 }}>{sg.facto}</div>
+                  <div style={{ fontSize: 11, color: T.muted, lineHeight: 1.6 }}>{sg.texto}</div>
+                </div>
+                {sg.acao && (
+                  <button onClick={() => aplicar(sg.acao.patch, `✅ ${sg.titulo} aplicado`)} style={{
+                    padding: "9px 16px", borderRadius: 9, border: `1px solid ${corSev[sg.sev]}`,
+                    background: `${corSev[sg.sev]}1a`, color: corSev[sg.sev], fontWeight: 700,
+                    fontSize: 11, cursor: "pointer", whiteSpace: "nowrap",
+                  }}>{sg.acao.label}</button>
+                )}
+              </div>
+            </Glass>
+          ))
+        )}
+
+        <Glass style={{ padding: "16px 20px", background: `${T.blue}08` }}>
+          <div style={{ fontSize: 10.5, color: T.muted, lineHeight: 1.6 }}>
+            <b style={{ color: T.aLight }}>Nota honesta:</b> estas sugestões reduzem o dano e alinham a config com os teus dados, mas
+            enquanto a lógica de entrada não tiver edge (confirmado pelo backtester), o sistema continua com expectativa negativa.
+            A mudança que mais mexe a agulha é testar a lógica momentum — corre <code style={{ color: T.accent }}>node scripts/backtest.js --compara --fetch=btc,eth,sol,xrp,ada --dias=365</code> na consola do Railway.
+          </div>
+        </Glass>
+      </div>
+    );
+  };
+
   // ─────────────────────────────────────────────
   // RENDER: HISTÓRICO
   // ─────────────────────────────────────────────
@@ -5955,6 +6105,7 @@ JSON puro:
     { id: "daytrading", icon: "⚡",  label: "Day Trading"   },
     { id: "ai",         icon: "◆",  label: "AI Intel"       },
     { id: "history",    icon: "≡",  label: "Histórico"      },
+    { id: "sugestoes",  icon: "💡", label: "Sugestões"      },
     { id: "messages",   icon: "🔔", label: "Mensagens"      },
     { id: "settings",   icon: "⚙",  label: "Definições"    },
     { id: "guide",      icon: "◉",  label: "Guia Setup"     },
@@ -6336,6 +6487,7 @@ JSON puro:
             {tab === "strategies" && <Strategies />}
             {tab === "ai"         && AIIntel()}
             {tab === "history"    && History()}
+            {tab === "sugestoes"  && Sugestoes()}
             {tab === "messages"   && Messages()}
             {tab === "daytrading" && DayTrading()}
             {tab === "settings"   && Settings()}
