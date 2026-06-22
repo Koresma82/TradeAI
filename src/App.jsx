@@ -328,6 +328,11 @@ export default function TradeAI() {
     dcaReequilibrar: true,
     dcaDerivaPct: 5,
     dcaProximaCompra: null,   // timestamp da próxima compra agendada (o bot gere)
+    // ── DCA multi-plano ──
+    dcaValorMensal: 100,      // o "bolo" por período repartido pelos planos
+    dcaPlanos: [],            // [{ id, nome, carteira, alocacao:{tipo,valor}, frequencia, dataInicio, reequilibrar }]
+    dcaAiTradePct: 20,        // % do capital reservado ao trading ativo
+    dcaAiTradeValor: 0,       // OU € fixo (>0 sobrepõe a %)
   };
   const PAPER_DEFAULTS = { capitalTotal: 1000, modoValor: "percentagem", valorFixo: 50,
     percentagem: 3, riscoPerfil: "moderado",
@@ -1194,7 +1199,8 @@ JSON puro — inclui TODOS os ativos relevantes de TODAS as categorias:
             if (user) import("./firebase.js").then(({ saveSetting }) => saveSetting(user.uid, docKey, novo).catch(() => {}));
             toast(`${v ? "✅ Ligado" : "💤 Desligado"}: ${label}`, v ? "info" : "success");
           };
-          const temPlano = Array.isArray(s.dcaCarteira) && s.dcaCarteira.length > 0;
+          const nPlanos = Array.isArray(s.dcaPlanos) ? s.dcaPlanos.length : 0;
+          const temPlano = nPlanos > 0 || (Array.isArray(s.dcaCarteira) && s.dcaCarteira.length > 0);
           // Estado efetivo de cada fonte (respeita o toggle antigo aiTradeAtivo).
           const ef = (k) => s.aiTradeAtivo || !!s[k];
           const fontes = [
@@ -1215,8 +1221,8 @@ JSON puro — inclui TODOS os ativos relevantes de TODAS as categorias:
                 </div>
                 <div style={{ fontSize: 10, color: T.muted, lineHeight: 1.5 }}>
                   {temPlano
-                    ? `Compra ${s.dcaFrequencia} de €${s.dcaValorPeriodico}, repartida por ${s.dcaCarteira.length} ativos. O núcleo passivo nunca para.`
-                    : "Ainda sem plano. Vai a 'Plano DCA' para o criar com ajuda da IA."}
+                    ? `${nPlanos > 0 ? nPlanos + " plano(s)" : "Plano"} ativo(s), €${s.dcaValorMensal || 0}/período repartido por objetivos. O núcleo passivo nunca para.`
+                    : "Ainda sem planos. Vai a 'Plano DCA' para criar com ajuda da IA."}
                 </div>
                 <div onClick={() => setTab("dca")} style={{ fontSize: 10, color: T.accent, marginTop: 8, cursor: "pointer", fontWeight: 600 }}>Abrir Plano DCA →</div>
               </Glass>
@@ -3652,169 +3658,206 @@ JSON: {"signals":[{"id":"btc","sinal":"COMPRAR|VENDER|AGUARDAR","razao":"1 frase
       if (msg) toast(msg, "success");
     };
 
-    const carteira = Array.isArray(s.dcaCarteira) ? s.dcaCarteira : [];
-    const temPlano = carteira.length > 0;
-    const somaPesos = carteira.reduce((acc, c) => acc + (c.peso || 0), 0);
+    // Migração suave: se houver plano antigo (dcaCarteira) e ainda não houver
+    // dcaPlanos, converte-o num plano "Principal" da primeira vez.
+    const planos = Array.isArray(s.dcaPlanos) ? s.dcaPlanos : [];
     const nomeAtivo = (id) => { const a = ASSETS.find(x => x.id === id); return a ? `${a.icon || ""} ${a.name}` : id; };
+    const bolo = Number(s.dcaValorMensal) || 0;
+
+    // Repartição: calcula quanto € vai cada plano + a fatia AI Trade.
+    const reservaAi = Number(s.dcaAiTradeValor) > 0 ? Number(s.dcaAiTradeValor)
+      : (Number(s.dcaAiTradePct) || 0) / 100 * bolo;
+    const planosEur = (() => {
+      const fixos = planos.filter(p => p.alocacao?.tipo === "valor");
+      const pcts = planos.filter(p => p.alocacao?.tipo === "pct");
+      const totalFixo = fixos.reduce((a, p) => a + (Number(p.alocacao.valor) || 0), 0);
+      const restante = Math.max(0, bolo - totalFixo - reservaAi);
+      const somaPct = pcts.reduce((a, p) => a + (Number(p.alocacao.valor) || 0), 0);
+      const out = {};
+      for (const p of fixos) out[p.id] = Math.min(Number(p.alocacao.valor) || 0, bolo);
+      for (const p of pcts) {
+        const ideal = bolo * (Number(p.alocacao.valor) || 0) / 100;
+        out[p.id] = somaPct > 0 ? Math.min(ideal, restante * (Number(p.alocacao.valor) / somaPct)) : 0;
+      }
+      return out;
+    })();
+    const totalAlocado = Object.values(planosEur).reduce((a, v) => a + v, 0) + reservaAi;
+    const sobra = +(bolo - totalAlocado).toFixed(2);
+
+    const novoPlano = (carteira, alocacao, frequencia, nome) => {
+      const id = "p_" + Date.now().toString(36);
+      const p = { id, nome: nome || "Novo plano", carteira, alocacao: alocacao || { tipo: "pct", valor: 0 },
+        frequencia: frequencia || "mensal", dataInicio: null, proximaCompra: null, reequilibrar: true };
+      salvar({ dcaPlanos: [...planos, p] }, `✅ Plano "${p.nome}" criado`);
+    };
+    const updPlano = (id, patch) => salvar({ dcaPlanos: planos.map(p => p.id === id ? { ...p, ...patch } : p) });
+    const delPlano = (id) => salvar({ dcaPlanos: planos.filter(p => p.id !== id) }, "Plano removido");
 
     return (
-      <div style={{ display: "flex", flexDirection: "column", gap: 16, maxWidth: 920 }}>
-        {/* Cabeçalho explicativo */}
+      <div style={{ display: "flex", flexDirection: "column", gap: 16, maxWidth: 940 }}>
+        {/* Cabeçalho */}
         <Glass style={{ padding: "20px 24px", background: `${T.green}0a`, border: `1px solid ${T.green}22` }}>
-          <div style={{ fontSize: 16, fontWeight: 800, marginBottom: 6 }}>🎯 Plano DCA — investir em piloto automático</div>
+          <div style={{ fontSize: 16, fontWeight: 800, marginBottom: 6 }}>🎯 Planos DCA — investir em piloto automático</div>
           <div style={{ fontSize: 11.5, color: T.muted, lineHeight: 1.7 }}>
-            DCA (compras regulares) significa investir uma quantia fixa em intervalos certos, sem tentar adivinhar o mercado.
-            Defines o plano aqui <b>uma vez</b> e o <b>bot executa tudo sozinho</b>, 24/7, mesmo com a app fechada.
-            É a abordagem "definir e esquecer" — ideal para acumular para um objetivo sem estar em cima dos mercados.
+            Defines um <b>valor mensal</b> e repartes por objetivos (ex.: Férias, Reforma). Cada plano tem a sua carteira e a sua data de início, para medires o desempenho de cada um. O <b>bot executa tudo sozinho</b>, 24/7, mesmo com a app fechada.
           </div>
           <div style={{ fontSize: 10, color: T.gold, marginTop: 10, lineHeight: 1.6, background: `${T.gold}12`, padding: "8px 12px", borderRadius: 8 }}>
-            ⚠️ Nota importante: isto não é aconselhamento financeiro. A IA ajuda-te a montar e perceber o plano, mas a decisão de investir dinheiro real é tua. Os mercados podem cair no curto prazo — o DCA funciona melhor com horizontes de vários anos.
+            ⚠️ Não é aconselhamento financeiro. A IA ajuda-te a montar, mas a decisão é tua. Os mercados podem cair no curto prazo — o DCA funciona melhor em horizontes de vários anos.
           </div>
         </Glass>
 
-        {/* Assistente IA — só aparece se ainda não há plano OU se pedires para refazer */}
-        <DCAAssistente carteiraAtual={carteira} onAplicar={(plano) => {
-          salvar({
-            dcaCarteira: plano.carteira,
-            dcaValorPeriodico: plano.valorPeriodico ?? s.dcaValorPeriodico,
-            dcaFrequencia: plano.frequencia ?? s.dcaFrequencia,
-          }, "✅ Plano DCA criado pela IA");
-        }} callAI={callAI} ASSETS={ASSETS} T={T} Glass={Glass} />
-
-        {/* Plano atual (se existe) */}
-        {temPlano && (
-          <Glass style={{ padding: "20px 24px" }}>
-            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 14 }}>
-              <div style={{ fontSize: 14, fontWeight: 800 }}>📋 O teu plano atual</div>
-              <div style={{ fontSize: 11, color: somaPesos === 100 ? T.green : T.gold }}>
-                Pesos somam {somaPesos}%{somaPesos !== 100 ? " (deviam somar 100%)" : " ✓"}
+        {/* Bolo mensal + repartição */}
+        <Glass style={{ padding: "20px 24px" }}>
+          <div style={{ fontSize: 14, fontWeight: 800, marginBottom: 14 }}>💰 Valor mensal e repartição</div>
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 16, marginBottom: 16 }}>
+            <div>
+              <div style={{ fontSize: 10, color: T.muted, letterSpacing: "0.1em", textTransform: "uppercase", marginBottom: 6 }}>Valor por período (o "bolo")</div>
+              <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                <span style={{ fontSize: 18, color: T.muted }}>€</span>
+                <input type="number" min={1} value={s.dcaValorMensal}
+                  onChange={(e) => salvar({ dcaValorMensal: Math.max(1, parseInt(e.target.value) || 1) })}
+                  style={{ width: "100%", padding: "9px 12px", borderRadius: 8, border: `1px solid ${T.border}`, background: "rgba(0,0,0,0.3)", color: T.aLight, fontSize: 16, fontWeight: 700 }} />
               </div>
             </div>
-
-            {/* Carteira */}
-            <div style={{ display: "flex", flexDirection: "column", gap: 8, marginBottom: 18 }}>
-              {carteira.map((c, i) => (
-                <div key={c.id} style={{ display: "flex", alignItems: "center", gap: 12, background: "rgba(0,0,0,0.2)", borderRadius: 8, padding: "10px 14px" }}>
-                  <div style={{ flex: 1, fontSize: 12, fontWeight: 600 }}>{nomeAtivo(c.id)}</div>
-                  <div style={{ width: 140, height: 8, borderRadius: 4, background: "rgba(255,255,255,0.08)", overflow: "hidden" }}>
-                    <div style={{ width: `${c.peso}%`, height: "100%", background: T.green }} />
-                  </div>
-                  <input type="number" min={0} max={100} value={c.peso}
-                    onChange={(e) => {
-                      const novo = [...carteira];
-                      novo[i] = { ...novo[i], peso: Math.max(0, Math.min(100, parseInt(e.target.value) || 0)) };
-                      salvar({ dcaCarteira: novo });
-                    }}
-                    style={{ width: 56, padding: "5px 8px", borderRadius: 6, border: `1px solid ${T.border}`, background: "rgba(0,0,0,0.3)", color: T.aLight, fontSize: 12, textAlign: "right" }} />
-                  <span style={{ fontSize: 11, color: T.muted }}>%</span>
-                  <button onClick={() => salvar({ dcaCarteira: carteira.filter((_, j) => j !== i) })}
-                    style={{ border: "none", background: "none", color: T.red, cursor: "pointer", fontSize: 16 }}>×</button>
-                </div>
-              ))}
-            </div>
-
-            {/* Adicionar ativo */}
-            <div style={{ display: "flex", gap: 8, alignItems: "center", marginBottom: 18 }}>
-              <select id="dca-add-asset" style={{ flex: 1, padding: "8px 10px", borderRadius: 8, border: `1px solid ${T.border}`, background: "rgba(0,0,0,0.3)", color: T.aLight, fontSize: 12 }}>
-                {ASSETS.filter(a => !carteira.find(c => c.id === a.id)).map(a => (
-                  <option key={a.id} value={a.id}>{a.name} ({a.cat})</option>
-                ))}
-              </select>
-              <button onClick={() => {
-                const sel = document.getElementById("dca-add-asset");
-                if (sel && sel.value) salvar({ dcaCarteira: [...carteira, { id: sel.value, peso: 0 }] });
-              }} style={{ padding: "8px 16px", borderRadius: 8, border: `1px solid ${T.accent}`, background: `${T.accent}1a`, color: T.accent, fontWeight: 700, fontSize: 12, cursor: "pointer" }}>+ Adicionar</button>
-            </div>
-
-            {/* Valor + frequência */}
-            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 16, marginBottom: 16 }}>
-              <div>
-                <div style={{ fontSize: 10, color: T.muted, letterSpacing: "0.1em", textTransform: "uppercase", marginBottom: 6 }}>Valor por compra (€)</div>
-                <input type="number" min={1} value={s.dcaValorPeriodico}
-                  onChange={(e) => salvar({ dcaValorPeriodico: Math.max(1, parseInt(e.target.value) || 1) })}
-                  style={{ width: "100%", padding: "9px 12px", borderRadius: 8, border: `1px solid ${T.border}`, background: "rgba(0,0,0,0.3)", color: T.aLight, fontSize: 15, fontWeight: 700 }} />
+            <div>
+              <div style={{ fontSize: 10, color: T.muted, letterSpacing: "0.1em", textTransform: "uppercase", marginBottom: 6 }}>Reserva p/ AI Trade</div>
+              <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+                <input type="number" min={0} value={s.dcaAiTradeValor > 0 ? s.dcaAiTradeValor : s.dcaAiTradePct}
+                  onChange={(e) => {
+                    const v = Math.max(0, parseInt(e.target.value) || 0);
+                    if (s.dcaAiTradeValor > 0) salvar({ dcaAiTradeValor: v });
+                    else salvar({ dcaAiTradePct: v });
+                  }}
+                  style={{ width: 80, padding: "9px 12px", borderRadius: 8, border: `1px solid ${T.border}`, background: "rgba(0,0,0,0.3)", color: T.aLight, fontSize: 15, fontWeight: 700 }} />
+                <button onClick={() => salvar(s.dcaAiTradeValor > 0 ? { dcaAiTradeValor: 0, dcaAiTradePct: 20 } : { dcaAiTradeValor: Math.round(reservaAi) || 20, dcaAiTradePct: 0 })}
+                  style={{ padding: "8px 12px", borderRadius: 8, border: `1px solid ${T.border}`, background: "transparent", color: T.accent, fontSize: 12, fontWeight: 700, cursor: "pointer" }}>
+                  {s.dcaAiTradeValor > 0 ? "€ fixo" : "% bolo"}
+                </button>
               </div>
-              <div>
-                <div style={{ fontSize: 10, color: T.muted, letterSpacing: "0.1em", textTransform: "uppercase", marginBottom: 6 }}>Frequência</div>
-                <select value={s.dcaFrequencia} onChange={(e) => salvar({ dcaFrequencia: e.target.value })}
-                  style={{ width: "100%", padding: "9px 12px", borderRadius: 8, border: `1px solid ${T.border}`, background: "rgba(0,0,0,0.3)", color: T.aLight, fontSize: 14, fontWeight: 600 }}>
+            </div>
+          </div>
+
+          {/* Barra de repartição visual */}
+          <div style={{ fontSize: 10, color: T.muted, marginBottom: 8 }}>Como o bolo de €{bolo} é repartido:</div>
+          <div style={{ display: "flex", height: 28, borderRadius: 8, overflow: "hidden", marginBottom: 10, background: "rgba(0,0,0,0.3)" }}>
+            {planos.map((p, i) => {
+              const w = bolo > 0 ? (planosEur[p.id] || 0) / bolo * 100 : 0;
+              const cores = [T.green, T.blue, T.accent, "#a78bfa", "#f472b6"];
+              return w > 0 ? <div key={p.id} title={`${p.nome}: €${(planosEur[p.id]||0).toFixed(0)}`} style={{ width: `${w}%`, background: cores[i % cores.length], display: "flex", alignItems: "center", justifyContent: "center", fontSize: 9, fontWeight: 700, color: "#000" }}>{w > 12 ? p.nome : ""}</div> : null;
+            })}
+            {reservaAi > 0 && <div title={`AI Trade: €${reservaAi.toFixed(0)}`} style={{ width: `${bolo > 0 ? reservaAi / bolo * 100 : 0}%`, background: T.gold, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 9, fontWeight: 700, color: "#000" }}>AI</div>}
+            {sobra > 0.5 && <div title={`Não alocado: €${sobra.toFixed(0)}`} style={{ width: `${sobra / bolo * 100}%`, background: "rgba(255,255,255,0.1)" }} />}
+          </div>
+          <div style={{ display: "flex", flexWrap: "wrap", gap: 12, fontSize: 10, color: T.muted }}>
+            {planos.map(p => <span key={p.id}>{p.nome}: <b style={{ color: T.aLight }}>€{(planosEur[p.id]||0).toFixed(0)}</b></span>)}
+            <span>⚡ AI Trade: <b style={{ color: T.gold }}>€{reservaAi.toFixed(0)}</b></span>
+            {sobra > 0.5 && <span style={{ color: T.gold }}>Não alocado: €{sobra.toFixed(0)}</span>}
+          </div>
+        </Glass>
+
+        {/* Lista de planos */}
+        {planos.map((p, idx) => {
+          const somaPesos = (p.carteira || []).reduce((a, c) => a + (c.peso || 0), 0);
+          const diasAtivo = p.dataInicio ? Math.floor((Date.now() - p.dataInicio) / 86400000) : null;
+          return (
+            <Glass key={p.id} style={{ padding: "18px 22px" }}>
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 12, gap: 10 }}>
+                <input value={p.nome} onChange={(e) => updPlano(p.id, { nome: e.target.value })}
+                  style={{ flex: 1, padding: "6px 10px", borderRadius: 6, border: `1px solid transparent`, background: "transparent", color: T.aLight, fontSize: 14, fontWeight: 800 }} />
+                <div style={{ fontSize: 11, fontWeight: 700, color: T.green }}>€{(planosEur[p.id]||0).toFixed(0)}/período</div>
+                <button onClick={() => delPlano(p.id)} style={{ border: "none", background: "none", color: T.red, cursor: "pointer", fontSize: 18 }}>×</button>
+              </div>
+
+              {diasAtivo != null && (
+                <div style={{ fontSize: 9.5, color: T.muted, marginBottom: 10 }}>📅 Início: {new Date(p.dataInicio).toLocaleDateString("pt-PT")} ({diasAtivo} dias) — desempenho mede-se a partir daqui</div>
+              )}
+
+              {/* Alocação */}
+              <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 12 }}>
+                <span style={{ fontSize: 10, color: T.muted }}>Alocar:</span>
+                <input type="number" min={0} value={p.alocacao?.valor || 0}
+                  onChange={(e) => updPlano(p.id, { alocacao: { ...p.alocacao, valor: Math.max(0, parseInt(e.target.value) || 0) } })}
+                  style={{ width: 70, padding: "6px 10px", borderRadius: 6, border: `1px solid ${T.border}`, background: "rgba(0,0,0,0.3)", color: T.aLight, fontSize: 13, fontWeight: 700 }} />
+                <button onClick={() => updPlano(p.id, { alocacao: { ...p.alocacao, tipo: p.alocacao?.tipo === "pct" ? "valor" : "pct" } })}
+                  style={{ padding: "6px 10px", borderRadius: 6, border: `1px solid ${T.border}`, background: "transparent", color: T.accent, fontSize: 11, fontWeight: 700, cursor: "pointer" }}>
+                  {p.alocacao?.tipo === "pct" ? "% do bolo" : "€ fixo"}
+                </button>
+                <select value={p.frequencia} onChange={(e) => updPlano(p.id, { frequencia: e.target.value })}
+                  style={{ marginLeft: "auto", padding: "6px 10px", borderRadius: 6, border: `1px solid ${T.border}`, background: "rgba(0,0,0,0.3)", color: T.aLight, fontSize: 12 }}>
                   <option value="semanal">Semanal</option>
-                  <option value="quinzenal">Quinzenal (15 dias)</option>
+                  <option value="quinzenal">Quinzenal</option>
                   <option value="mensal">Mensal</option>
                 </select>
               </div>
-            </div>
 
-            {/* Projeção simples */}
-            {(() => {
-              const porMes = s.dcaFrequencia === "semanal" ? s.dcaValorPeriodico * 4.33 : s.dcaFrequencia === "quinzenal" ? s.dcaValorPeriodico * 2.17 : s.dcaValorPeriodico;
-              const porAno = porMes * 12;
-              return (
-                <div style={{ fontSize: 11, color: T.muted, lineHeight: 1.7, background: "rgba(0,0,0,0.2)", borderRadius: 8, padding: "12px 14px" }}>
-                  Vais investir cerca de <b style={{ color: T.aLight }}>€{Math.round(porMes)}/mês</b> (€{Math.round(porAno)}/ano).
-                  O bot reparte automaticamente pela tua carteira em cada compra. O valor final depende do desempenho dos mercados — não é garantido.
-                </div>
-              );
-            })()}
-          </Glass>
-        )}
-
-        {/* Reequilíbrio */}
-        {temPlano && (
-          <Glass style={{ padding: "18px 22px" }}>
-            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 12 }}>
-              <div style={{ flex: 1 }}>
-                <div style={{ fontSize: 13, fontWeight: 700, marginBottom: 4 }}>⚖️ Reequilíbrio automático</div>
-                <div style={{ fontSize: 10.5, color: T.muted, lineHeight: 1.6 }}>
-                  Quando um ativo sobe muito e desequilibra a carteira, o bot vende um pouco do que subiu e compra do que ficou para trás, voltando aos pesos-alvo. Força "vender caro, comprar barato" automaticamente.
-                </div>
+              {/* Carteira do plano */}
+              <div style={{ display: "flex", flexDirection: "column", gap: 6, marginBottom: 10 }}>
+                {(p.carteira || []).map((c, i) => (
+                  <div key={c.id} style={{ display: "flex", alignItems: "center", gap: 10, background: "rgba(0,0,0,0.2)", borderRadius: 8, padding: "8px 12px" }}>
+                    <span style={{ flex: 1, fontSize: 11.5 }}>{nomeAtivo(c.id)}</span>
+                    <input type="number" min={0} max={100} value={c.peso}
+                      onChange={(e) => { const nc = [...p.carteira]; nc[i] = { ...nc[i], peso: Math.max(0, Math.min(100, parseInt(e.target.value) || 0)) }; updPlano(p.id, { carteira: nc }); }}
+                      style={{ width: 52, padding: "4px 8px", borderRadius: 6, border: `1px solid ${T.border}`, background: "rgba(0,0,0,0.3)", color: T.aLight, fontSize: 12, textAlign: "right" }} />
+                    <span style={{ fontSize: 10, color: T.muted }}>%</span>
+                    <button onClick={() => updPlano(p.id, { carteira: p.carteira.filter((_, j) => j !== i) })} style={{ border: "none", background: "none", color: T.red, cursor: "pointer", fontSize: 14 }}>×</button>
+                  </div>
+                ))}
+                {somaPesos !== 100 && (p.carteira || []).length > 0 && <div style={{ fontSize: 9.5, color: T.gold }}>Pesos somam {somaPesos}% (deviam somar 100%)</div>}
               </div>
-              <div onClick={() => salvar({ dcaReequilibrar: !s.dcaReequilibrar })} style={{ cursor: "pointer", flexShrink: 0 }}>
-                <div style={{ width: 44, height: 24, borderRadius: 12, background: s.dcaReequilibrar ? T.green : "rgba(255,255,255,0.1)", position: "relative", transition: "all 0.2s" }}>
-                  <div style={{ position: "absolute", top: 3, left: s.dcaReequilibrar ? 22 : 2, width: 18, height: 18, borderRadius: "50%", background: "#fff", transition: "left 0.2s" }} />
-                </div>
-              </div>
-            </div>
-          </Glass>
-        )}
 
-        {/* ── Como funciona + conselhos (educação) ── */}
+              <div style={{ display: "flex", gap: 8 }}>
+                <select id={`add-${p.id}`} style={{ flex: 1, padding: "7px 10px", borderRadius: 8, border: `1px solid ${T.border}`, background: "rgba(0,0,0,0.3)", color: T.aLight, fontSize: 11 }}>
+                  {ASSETS.filter(a => !(p.carteira || []).find(c => c.id === a.id)).map(a => <option key={a.id} value={a.id}>{a.name} ({a.cat})</option>)}
+                </select>
+                <button onClick={() => { const sel = document.getElementById(`add-${p.id}`); if (sel?.value) updPlano(p.id, { carteira: [...(p.carteira || []), { id: sel.value, peso: 0 }] }); }}
+                  style={{ padding: "7px 14px", borderRadius: 8, border: `1px solid ${T.accent}`, background: `${T.accent}1a`, color: T.accent, fontWeight: 700, fontSize: 11, cursor: "pointer" }}>+ Ativo</button>
+              </div>
+            </Glass>
+          );
+        })}
+
+        {/* Criar novo plano (com ou sem assistente IA) */}
+        <Glass style={{ padding: "18px 22px", border: `1px dashed ${T.border}` }}>
+          <div style={{ fontSize: 13, fontWeight: 700, marginBottom: 10 }}>➕ Criar novo plano</div>
+          <DCAAssistente carteiraAtual={[]} onAplicar={(plano) => {
+            novoPlano(plano.carteira, { tipo: "pct", valor: 0 }, plano.frequencia, plano.nome || "Novo plano");
+          }} callAI={callAI} ASSETS={ASSETS} T={T} Glass={Glass} />
+          <button onClick={() => novoPlano([], { tipo: "pct", valor: 0 }, "mensal", "Plano manual")}
+            style={{ marginTop: 10, padding: "8px 16px", borderRadius: 8, border: `1px solid ${T.border}`, background: "transparent", color: T.muted, fontSize: 11, cursor: "pointer" }}>
+            ou criar plano vazio (configuro à mão)
+          </button>
+        </Glass>
+
+        {/* Como funciona + conselhos */}
         <Glass style={{ padding: "20px 24px" }}>
           <div style={{ fontSize: 14, fontWeight: 800, marginBottom: 14 }}>📚 Como funciona, em simples</div>
           <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
             {[
-              { n: "1", t: "Compras automáticas e regulares", d: "O bot compra a quantia que definiste, na frequência que escolheste, sem ti. Compra mais unidades quando os preços estão baixos e menos quando estão altos — ao longo do tempo, o teu preço médio fica equilibrado. É o oposto de tentar adivinhar o melhor momento (que ninguém consegue fazer de forma fiável)." },
-              { n: "2", t: "Diversificação", d: "Repartir por vários ativos (ações, ouro, etc.) reduz o risco: se um cai, outros podem segurar. Não pões todos os ovos no mesmo cesto." },
-              { n: "3", t: "Reequilíbrio", d: "Quando um ativo sobe muito e fica com peso a mais, o bot vende um pouco e reforça os que ficaram para trás. Isto faz-te automaticamente 'vender caro e comprar barato', sem decisões emocionais." },
-              { n: "4", t: "Segurar a longo prazo", d: "O DCA não tem stop-loss nem alvos. Acumula e segura. Funciona porque os mercados tendem a subir ao longo de anos — mas podem cair no curto prazo." },
-            ].map(item => (
-              <div key={item.n} style={{ display: "flex", gap: 14 }}>
-                <div style={{ flexShrink: 0, width: 28, height: 28, borderRadius: "50%", background: `${T.green}1a`, border: `1px solid ${T.green}44`, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 13, fontWeight: 700, color: T.green }}>{item.n}</div>
-                <div>
-                  <div style={{ fontSize: 12, fontWeight: 700, marginBottom: 3 }}>{item.t}</div>
-                  <div style={{ fontSize: 10.5, color: T.muted, lineHeight: 1.6 }}>{item.d}</div>
-                </div>
+              ["1", "Um bolo, vários objetivos", "Defines quanto investes por período e repartes por planos (Férias, Reforma…). O bot separa e investe cada fatia na carteira certa."],
+              ["2", "Compras automáticas e regulares", "Compra mais quando os preços estão baixos e menos quando estão altos. Não tentas adivinhar o melhor momento — invistes sempre."],
+              ["3", "Cada objetivo, a sua carteira", "A Reforma (longo prazo) aguenta mais risco; as Férias (curto prazo) pedem mais segurança. Cada plano tem a sua data de início para medir o desempenho."],
+              ["4", "Reequilíbrio e segurar", "O bot mantém os pesos-alvo e segura a longo prazo. Sem stop-loss — acumula e deixa crescer."],
+            ].map(([n, t, d]) => (
+              <div key={n} style={{ display: "flex", gap: 14 }}>
+                <div style={{ flexShrink: 0, width: 28, height: 28, borderRadius: "50%", background: `${T.green}1a`, border: `1px solid ${T.green}44`, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 13, fontWeight: 700, color: T.green }}>{n}</div>
+                <div><div style={{ fontSize: 12, fontWeight: 700, marginBottom: 3 }}>{t}</div><div style={{ fontSize: 10.5, color: T.muted, lineHeight: 1.6 }}>{d}</div></div>
               </div>
             ))}
           </div>
         </Glass>
 
-        {/* ── Conselhos ── */}
         <Glass style={{ padding: "20px 24px", background: `${T.blue}08` }}>
-          <div style={{ fontSize: 14, fontWeight: 800, marginBottom: 14 }}>💡 Conselhos para te saíres bem</div>
+          <div style={{ fontSize: 14, fontWeight: 800, marginBottom: 14 }}>💡 Conselhos</div>
           <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
             {[
-              ["Consistência ganha", "O segredo do DCA é não parar e não mexer. Compra todas as semanas/meses, aconteça o que acontecer nos mercados. Resistir à tentação de 'esperar por um momento melhor' é o que faz isto funcionar."],
-              ["Pensa em anos, não em semanas", "O DCA brilha em horizontes de 3+ anos. Se vais precisar do dinheiro daqui a poucos meses, o risco de uma queda no curto prazo é maior — não convém ter tudo investido."],
-              ["Não invistas o que não podes perder", "Mesmo diversificado, há risco. O dinheiro que é mesmo essencial (renda, emergências) não deve estar nos mercados."],
-              ["Ignora o ruído", "Notícias e pânico levam a decisões más. O plano automático existe precisamente para te tirares da equação emocional. Deixa-o trabalhar."],
+              ["Consistência ganha", "O segredo do DCA é nunca parar. Mais vale um valor pequeno que aguentas sempre do que um grande que te obriga a parar."],
+              ["Pensa em anos", "O DCA brilha em horizontes de 3+ anos. Para objetivos próximos, tem menos margem para recuperar de uma queda."],
+              ["Não invistas o essencial", "O dinheiro de emergências e despesas não deve estar nos mercados, mesmo diversificado."],
+              ["Reforma aguenta mais risco", "Quanto mais longe o objetivo, mais a carteira pode arriscar (mais ações). Quanto mais perto, mais segura (mais ouro/obrigações)."],
             ].map(([t, d], i) => (
               <div key={i} style={{ display: "flex", gap: 10 }}>
                 <span style={{ color: T.blue, fontSize: 14, flexShrink: 0 }}>✓</span>
-                <div>
-                  <div style={{ fontSize: 11.5, fontWeight: 700, marginBottom: 2 }}>{t}</div>
-                  <div style={{ fontSize: 10.5, color: T.muted, lineHeight: 1.6 }}>{d}</div>
-                </div>
+                <div><div style={{ fontSize: 11.5, fontWeight: 700, marginBottom: 2 }}>{t}</div><div style={{ fontSize: 10.5, color: T.muted, lineHeight: 1.6 }}>{d}</div></div>
               </div>
             ))}
           </div>
