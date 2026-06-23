@@ -165,13 +165,12 @@ export function subscribeSetting(uid, key, callback) {
 // Ouve as ordens DCA manuais pendentes (docs settings/dcaManual_*). Devolve a
 // lista das que ainda estão PENDENTE, para a app mostrar "compra isto e confirma".
 export function subscribeManualOrders(uid, callback) {
-  return onSnapshot(collection(db, "users", uid, "settings"), snap => {
-    const ordens = [];
-    snap.forEach(d => {
-      if (!d.id.startsWith("dcaManual_")) return;
-      const v = d.data().value;
-      if (v && v.estado === "PENDENTE") ordens.push(v);
-    });
+  // Subscreve só o doc consolidado settings/dcaManualPendentes (o bot mantém-no
+  // atualizado). Barato e só dispara quando a lista de ordens muda — sem loops,
+  // sem ler a coleção inteira.
+  return onSnapshot(userDoc(uid, "settings", "dcaManualPendentes"), snap => {
+    const v = snap.exists() ? snap.data().value : [];
+    const ordens = Array.isArray(v) ? v.filter(o => o && o.estado === "PENDENTE") : [];
     ordens.sort((a, b) => (a.criadoEm || 0) - (b.criadoEm || 0));
     callback(ordens);
   });
