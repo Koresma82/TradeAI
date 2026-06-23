@@ -976,13 +976,14 @@ export default function TradeAI() {
             }));
             setDtDailyPnl(prev => +(prev + dtClosed.reduce((s, c) => s + (c.pnl || 0), 0)).toFixed(2));
           }
-          // Persistir no Firestore
-          if (user) {
+          // Persistir no Firestore — só em paper/live (a simulação local é
+          // visual-only; o bot é a fonte de verdade e evita escritas constantes).
+          if (user && !isSim) {
             import("./firebase.js").then(({ updateTrade, saveSetting }) => {
               toClose.forEach(t => updateTrade(user.uid, t.id, {
                 status: t.status, closePrice: t.closePrice, pnl: t.pnl, closedAt: t.closedAt,
               }).catch(() => {}));
-              saveSetting(user.uid, isSim ? "simBalance" : "liveBalance", balRefCur.current).catch(() => {});
+              saveSetting(user.uid, "liveBalance", balRefCur.current).catch(() => {});
             }).catch(() => {});
           }
         } else if (trailingOn) {
@@ -1040,7 +1041,9 @@ export default function TradeAI() {
                 setStrategies(p => p.map(x => x.id === s.id ? { ...x, trades: x.trades + 1 } : x));
                 cds.current[key] = 22;
                 openedThisTick++;
-                if (user) import("./firebase.js").then(({ saveTrade }) => saveTrade(user.uid, pos).catch(()=>{})).catch(()=>{});
+                // Simulação LOCAL é visual-only: não persiste no Firestore (o bot
+                // é a fonte de verdade). Evita escritas constantes a cada tick.
+                // if (user) import("./firebase.js").then(({ saveTrade }) => saveTrade(user.uid, pos).catch(()=>{})).catch(()=>{});
                 toast(`📈 ${isSim ? "[SIM] " : ""}BUY ${a.sym} @$${a.price.toFixed(2)} · "${s.nome}"`, "buy");
               }
             });
@@ -1085,7 +1088,8 @@ export default function TradeAI() {
             setBal(b => { const n = +(Math.max(0, b - perTrade)).toFixed(2); balRefCur.current = n; return n; });
             cds.current[key] = 30; // cooldown ~60s por ativo
             openedBrain++;
-            if (user) import("./firebase.js").then(({ saveTrade }) => saveTrade(user.uid, pos).catch(()=>{})).catch(()=>{});
+            // Simulação local visual-only: não persiste (bot é a fonte de verdade).
+            // if (user) import("./firebase.js").then(({ saveTrade }) => saveTrade(user.uid, pos).catch(()=>{})).catch(()=>{});
             toast(`🤖 ${isSim ? "[SIM] " : ""}AI comprou ${a.sym} @$${a.price.toFixed(2)} · confiança ${sg.confianca}%`, "buy");
           });
         }
