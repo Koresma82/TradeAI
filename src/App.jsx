@@ -7362,7 +7362,7 @@ JSON puro:
       });
     }).catch(() => {});
     return () => { unsubTrades?.(); unsubBal?.(); unsubBalLive?.(); unsubTradeable?.(); unsubMktPrices?.(); unsubStrat?.(); unsubSettings?.(); unsubLive?.(); unsubLiveLegacy?.(); unsubReal?.(); unsubCtrl?.(); unsubArch?.(); unsubDt?.(); unsubBot?.(); unsubSig?.(); unsubDaily?.(); unsubBrokers?.(); unsubLogs?.(); unsubPriceStats?.(); unsubRegimeLog?.(); unsubManual?.(); };
-  }, [user]);
+  }, [user?.uid]);
 
   // ── Persistência: guardar trade quando aberto ─────────────────────────────
   // (chamado explicitamente nas funções de compra/venda)
