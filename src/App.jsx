@@ -6258,7 +6258,8 @@ pm2 save && pm2 startup`}</CodeBlock>
             </div>
           </div>
         </Glass>
-        <div style={{ display: "flex", gap: 12, justifyContent: "space-between", alignItems: "center" }}>
+        <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+          <div style={{ display: "flex", gap: 12, justifyContent: "space-between", alignItems: "center" }}>
           {/* Limpar simulações */}
           <button onClick={() => {
             navigator.clipboard?.writeText(user.uid);
@@ -6308,6 +6309,7 @@ pm2 save && pm2 startup`}</CodeBlock>
             padding: "10px 18px", fontSize: 12, color: T.red, cursor: "pointer", fontFamily: "inherit", fontWeight: 700,
           }}>🗑 Limpar Simulações</button>
           )}
+          </div>
           {/* ── DCA: travão de emergência (desligar o núcleo passivo) ── */}
           {!isSimTab && (() => {
             const setDca = (v) => {
@@ -6420,6 +6422,7 @@ pm2 save && pm2 startup`}</CodeBlock>
                   "Todas as posições abertas e fechadas",
                   "Todo o histórico e arquivos diários",
                   "Todas as estatísticas",
+                  "Todas as estratégias de trading",
                   "O saldo volta ao capital inicial",
                   "As definições e o plano DCA mantêm-se",
                 ],
