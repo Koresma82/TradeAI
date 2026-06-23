@@ -1,5 +1,5 @@
 // src/AuthContext.jsx
-import { createContext, useContext, useEffect, useState } from "react";
+import { createContext, useContext, useEffect, useState, useMemo } from "react";
 import { onAuthChange } from "./firebase.js";
 
 const AuthCtx = createContext(null);
@@ -16,8 +16,12 @@ export function AuthProvider({ children }) {
     return unsub;
   }, []);
 
+  // Memoizar o value para que os consumidores (e os seus useEffect com deps [user])
+  // não re-corram a cada render do Provider.
+  const value = useMemo(() => ({ user, loading }), [user, loading]);
+
   return (
-    <AuthCtx.Provider value={{ user, loading }}>
+    <AuthCtx.Provider value={value}>
       {children}
     </AuthCtx.Provider>
   );

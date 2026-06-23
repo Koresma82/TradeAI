@@ -268,6 +268,204 @@ function SectionLabel({ children }) {
 }
 
 // ─── APP ─────────────────────────────────────────────────────────────────────
+// ── Assistente DCA (componente de módulo — identidade estável p/ não perder estado) ──
+function DCAAssistente({ carteiraAtual, onAplicar, callAI, ASSETS, T, Glass, brokersDisp = [] }) {
+  const [aberto, setAberto] = useState(carteiraAtual.length === 0);
+  const [objetivo, setObjetivo] = useState("ferias");
+  const [horizonte, setHorizonte] = useState("2-5");
+  const [perfil, setPerfil] = useState("equilibrado");
+  const [valor, setValor] = useState(50);
+  const [freq, setFreq] = useState("semanal");
+  const [loading, setLoading] = useState(false);
+  const [sugestao, setSugestao] = useState(null);
+  const [erro, setErro] = useState(null);
+
+  if (!aberto) {
+    return (
+      <Glass style={{ padding: "14px 20px", display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+        <span style={{ fontSize: 12, color: T.muted }}>Queres refazer o plano com ajuda da IA?</span>
+        <button onClick={() => setAberto(true)} style={{ padding: "8px 16px", borderRadius: 8, border: `1px solid ${T.accent}`, background: `${T.accent}1a`, color: T.accent, fontWeight: 700, fontSize: 12, cursor: "pointer" }}>🤖 Abrir assistente</button>
+      </Glass>
+    );
+  }
+
+  const pedirSugestao = async () => {
+    setLoading(true); setErro(null); setSugestao(null);
+    // Universo restrito ao que os brokers DISPONÍVEIS conseguem negociar. Assim
+    // a IA nunca sugere algo que não consegues comprar. XTB = ETF/ações/commodity;
+    // Binance = cripto. Se não houver info de brokers, usa o conjunto seguro (XTB).
+    const brokersAtivos = brokersDisp.length ? brokersDisp : [{ assetClasses: ["etf", "stock", "commodity"], nome: "XTB" }];
+    const classesOk = new Set();
+    brokersAtivos.forEach(b => (b.assetClasses || []).forEach(c => classesOk.add(c)));
+    const catParaClasseLocal = { Crypto: "crypto", ETF: "etf", "Ação": "stock", Commodity: "commodity", Forex: "forex" };
+    const universoAtivos = ASSETS.filter(a => classesOk.has(catParaClasseLocal[a.cat]));
+    const universo = universoAtivos.map(a => `${a.id} (${a.name}, ${a.cat})`).join(", ");
+    const nomesBrokers = brokersAtivos.map(b => b.nome).join(" + ");
+    try {
+      const { result } = await callAI({
+        max_tokens: 900,
+        system: "És um educador financeiro que explica investimento passivo a leigos em português de Portugal. Sugeres carteiras diversificadas e simples para DCA. NÃO és consultor financeiro e deixas isso claro. Respondes SÓ em JSON puro, sem markdown.",
+        messages: [{ role: "user", content:
+`Um utilizador leigo quer montar um plano DCA. Dados:
+- Objetivo: ${objetivo}
+- Horizonte: ${horizonte} anos
+- Tolerância a risco: ${perfil}
+- Investe €${valor} ${freq}
+- Brokers disponíveis: ${nomesBrokers}
+
+Ativos disponíveis (usa SÓ estes ids — são os que os brokers do utilizador conseguem comprar): ${universo}
+
+Sugere uma carteira diversificada e simples (3 a 5 ativos), adequada ao perfil e horizonte. Mais conservador = mais ETFs amplos e ouro, menos/nada de crypto. Mais arrojado = pode incluir uma fatia pequena de crypto SE houver um broker de cripto disponível. NUNCA sugiras um ativo cujo id não esteja na lista acima. Os pesos têm de somar 100.
+
+Responde SÓ com este JSON:
+{"carteira":[{"id":"spy","peso":50},{"id":"gld","peso":30},{"id":"tlt","peso":20}],"explicacao":"frase curta em pt-PT a explicar a lógica","aviso":"1 frase a lembrar que não é aconselhamento e que há risco"}` }],
+      });
+      if (!result?.carteira?.length) throw new Error("Resposta sem carteira");
+      // Salvaguarda: filtra qualquer ativo que a IA tenha sugerido fora do universo.
+      const idsOk = new Set(universoAtivos.map(a => a.id));
+      result.carteira = result.carteira.filter(c => idsOk.has(c.id));
+      if (!result.carteira.length) throw new Error("A IA sugeriu ativos indisponíveis — tenta de novo");
+      setSugestao(result);
+    } catch (e) {
+      setErro(e.message || "Falha ao contactar a IA");
+    } finally { setLoading(false); }
+  };
+
+  const Opt = ({ val, cur, set, children }) => (
+    <button onClick={() => set(val)} style={{ padding: "7px 12px", borderRadius: 8, fontSize: 11, fontWeight: 600, cursor: "pointer",
+      border: `1px solid ${cur === val ? T.accent : T.border}`, background: cur === val ? `${T.accent}1a` : "transparent", color: cur === val ? T.accent : T.muted }}>{children}</button>
+  );
+
+  return (
+    <Glass style={{ padding: "20px 24px", border: `1px solid ${T.accent}33` }}>
+      <div style={{ fontSize: 14, fontWeight: 800, marginBottom: 4 }}>🤖 Assistente de Plano</div>
+      <div style={{ fontSize: 11, color: T.muted, marginBottom: 18, lineHeight: 1.6 }}>Responde a 4 perguntas simples e a IA sugere-te uma carteira. Podes ajustar tudo depois.</div>
+
+      <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
+        <div>
+          <div style={{ fontSize: 11, fontWeight: 600, marginBottom: 8 }}>Para que é o dinheiro?</div>
+          <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+            <Opt val="ferias" cur={objetivo} set={setObjetivo}>Férias / objetivo a médio prazo</Opt>
+            <Opt val="reforma" cur={objetivo} set={setObjetivo}>Poupança longa / reforma</Opt>
+            <Opt val="crescer" cur={objetivo} set={setObjetivo}>Fazer crescer dinheiro extra</Opt>
+          </div>
+        </div>
+        <div>
+          <div style={{ fontSize: 11, fontWeight: 600, marginBottom: 8 }}>Quando vais querer usá-lo?</div>
+          <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+            <Opt val="1-2" cur={horizonte} set={setHorizonte}>1-2 anos</Opt>
+            <Opt val="2-5" cur={horizonte} set={setHorizonte}>2-5 anos</Opt>
+            <Opt val="5+" cur={horizonte} set={setHorizonte}>Mais de 5 anos</Opt>
+          </div>
+        </div>
+        <div>
+          <div style={{ fontSize: 11, fontWeight: 600, marginBottom: 8 }}>Como te sentes sobre altos e baixos?</div>
+          <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+            <Opt val="conservador" cur={perfil} set={setPerfil}>Prefiro seguro</Opt>
+            <Opt val="equilibrado" cur={perfil} set={setPerfil}>Equilibrado</Opt>
+            <Opt val="arrojado" cur={perfil} set={setPerfil}>Aceito risco por mais retorno</Opt>
+          </div>
+        </div>
+        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
+          <div>
+            <div style={{ fontSize: 11, fontWeight: 600, marginBottom: 8 }}>Quanto por compra (€)?</div>
+            <input type="number" min={1} value={valor} onChange={(e) => setValor(Math.max(1, parseInt(e.target.value) || 1))}
+              style={{ width: "100%", padding: "8px 12px", borderRadius: 8, border: `1px solid ${T.border}`, background: "rgba(0,0,0,0.3)", color: T.aLight, fontSize: 14, fontWeight: 700 }} />
+          </div>
+          <div>
+            <div style={{ fontSize: 11, fontWeight: 600, marginBottom: 8 }}>Com que frequência?</div>
+            <select value={freq} onChange={(e) => setFreq(e.target.value)}
+              style={{ width: "100%", padding: "8px 12px", borderRadius: 8, border: `1px solid ${T.border}`, background: "rgba(0,0,0,0.3)", color: T.aLight, fontSize: 13 }}>
+              <option value="semanal">Semanal</option>
+              <option value="quinzenal">Quinzenal</option>
+              <option value="mensal">Mensal</option>
+            </select>
+          </div>
+        </div>
+
+        <button onClick={pedirSugestao} disabled={loading} style={{ padding: "11px", borderRadius: 9, border: "none", background: loading ? T.border : T.accent, color: "#fff", fontWeight: 700, fontSize: 13, cursor: loading ? "default" : "pointer" }}>
+          {loading ? "A pensar…" : "✨ Sugerir carteira"}
+        </button>
+
+        {erro && <div style={{ fontSize: 11, color: T.red }}>⚠ {erro}</div>}
+
+        {sugestao && (
+          <div style={{ background: `${T.green}0c`, border: `1px solid ${T.green}33`, borderRadius: 10, padding: "16px 18px" }}>
+            <div style={{ fontSize: 12, fontWeight: 700, marginBottom: 10 }}>Carteira sugerida:</div>
+            <div style={{ display: "flex", flexDirection: "column", gap: 6, marginBottom: 12 }}>
+              {sugestao.carteira.map(c => {
+                const a = ASSETS.find(x => x.id === c.id);
+                return (
+                  <div key={c.id} style={{ display: "flex", justifyContent: "space-between", fontSize: 12 }}>
+                    <span>{a ? `${a.icon || ""} ${a.name}` : c.id}</span>
+                    <span style={{ fontWeight: 700, color: T.green }}>{c.peso}%</span>
+                  </div>
+                );
+              })}
+            </div>
+            {sugestao.explicacao && <div style={{ fontSize: 11, color: T.muted, lineHeight: 1.6, marginBottom: 8 }}>{sugestao.explicacao}</div>}
+            {sugestao.aviso && <div style={{ fontSize: 10, color: T.gold, lineHeight: 1.5, marginBottom: 12 }}>⚠️ {sugestao.aviso}</div>}
+            <button onClick={() => { onAplicar({ carteira: sugestao.carteira, valorPeriodico: valor, frequencia: freq }); setAberto(false); }}
+              style={{ width: "100%", padding: "10px", borderRadius: 8, border: `1px solid ${T.green}`, background: `${T.green}1a`, color: T.green, fontWeight: 700, fontSize: 12, cursor: "pointer" }}>
+              ✓ Usar esta carteira
+            </button>
+          </div>
+        )}
+      </div>
+    </Glass>
+  );
+}
+
+// ── Card de ordem manual (módulo — estado estável) ──
+function OrdemManualCard({ ordem, ASSETS, T, Glass, precoAtual, onConfirmar }) {
+  const nomeAtivo = (id) => { const a = ASSETS.find(x => x.id === id); return a ? `${a.icon || ""} ${a.name}` : id; };
+  // Estado local: preço por item (sugerido = preço atual ou o que veio na ordem).
+  const [precos, setPrecos] = useState(() => {
+    const o = {};
+    (ordem.itens || []).forEach(it => { o[it.assetId] = it.precoSugerido || precoAtual(it.assetId) || ""; });
+    return o;
+  });
+  const [feito, setFeito] = useState(false);
+
+  return (
+    <Glass style={{ padding: "18px 22px", border: `1px solid ${T.gold}55`, background: `${T.gold}0c` }}>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 10 }}>
+        <div style={{ fontSize: 13, fontWeight: 800 }}>🔔 Compra pendente — {ordem.planNome}</div>
+        <div style={{ fontSize: 11, fontWeight: 700, color: T.gold }}>€{(ordem.valorTotal || 0).toFixed(2)}</div>
+      </div>
+      <div style={{ fontSize: 10.5, color: T.muted, lineHeight: 1.6, marginBottom: 14 }}>
+        Está na hora da compra deste plano. Compra estes valores no teu broker, confirma o preço a que compraste (ou deixa o sugerido), e carrega em "Já comprei". A posição fica registada no teu relatório.
+      </div>
+
+      <div style={{ display: "flex", flexDirection: "column", gap: 8, marginBottom: 14 }}>
+        {(ordem.itens || []).map(it => (
+          <div key={it.assetId} style={{ display: "flex", alignItems: "center", gap: 10, background: "rgba(0,0,0,0.2)", borderRadius: 8, padding: "10px 12px" }}>
+            <div style={{ flex: 1 }}>
+              <div style={{ fontSize: 12, fontWeight: 700 }}>{nomeAtivo(it.assetId)}</div>
+              <div style={{ fontSize: 10, color: T.muted }}>Comprar <b style={{ color: T.aLight }}>€{it.eur.toFixed(2)}</b></div>
+            </div>
+            <div style={{ display: "flex", alignItems: "center", gap: 4 }}>
+              <span style={{ fontSize: 10, color: T.muted }}>preço:</span>
+              <input type="number" step="0.01" value={precos[it.assetId]}
+                onChange={(e) => setPrecos(p => ({ ...p, [it.assetId]: e.target.value }))}
+                style={{ width: 84, padding: "6px 8px", borderRadius: 6, border: `1px solid ${T.border}`, background: "rgba(0,0,0,0.3)", color: T.aLight, fontSize: 12, textAlign: "right" }} />
+            </div>
+          </div>
+        ))}
+      </div>
+
+      <button disabled={feito} onClick={() => {
+        const itens = (ordem.itens || []).map(it => ({ assetId: it.assetId, eur: it.eur, preco: parseFloat(precos[it.assetId]) || it.precoSugerido || 0 }));
+        if (itens.some(i => !i.preco)) return;
+        setFeito(true);
+        onConfirmar(itens);
+      }} style={{ width: "100%", padding: "11px", borderRadius: 9, border: "none", background: feito ? T.border : T.green, color: "#fff", fontWeight: 700, fontSize: 13, cursor: feito ? "default" : "pointer" }}>
+        {feito ? "✓ Registado" : "✓ Já comprei — registar no plano"}
+      </button>
+    </Glass>
+  );
+}
+
 export default function TradeAI() {
   const { user, loading: authLoading } = useAuth();
   const [dbLoaded, setDbLoaded] = useState(false); // flag: firestore carregado
@@ -3842,54 +4040,6 @@ JSON: {"signals":[{"id":"btc","sinal":"COMPRAR|VENDER|AGUARDAR","razao":"1 frase
 
   // ── Card de uma ordem DCA manual pendente: mostra o que comprar, deixa editar
   //    o preço real, e confirma (regista a posição). ──
-  const OrdemManualCard = ({ ordem, ASSETS, T, Glass, precoAtual, onConfirmar }) => {
-    const nomeAtivo = (id) => { const a = ASSETS.find(x => x.id === id); return a ? `${a.icon || ""} ${a.name}` : id; };
-    // Estado local: preço por item (sugerido = preço atual ou o que veio na ordem).
-    const [precos, setPrecos] = useState(() => {
-      const o = {};
-      (ordem.itens || []).forEach(it => { o[it.assetId] = it.precoSugerido || precoAtual(it.assetId) || ""; });
-      return o;
-    });
-    const [feito, setFeito] = useState(false);
-
-    return (
-      <Glass style={{ padding: "18px 22px", border: `1px solid ${T.gold}55`, background: `${T.gold}0c` }}>
-        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 10 }}>
-          <div style={{ fontSize: 13, fontWeight: 800 }}>🔔 Compra pendente — {ordem.planNome}</div>
-          <div style={{ fontSize: 11, fontWeight: 700, color: T.gold }}>€{(ordem.valorTotal || 0).toFixed(2)}</div>
-        </div>
-        <div style={{ fontSize: 10.5, color: T.muted, lineHeight: 1.6, marginBottom: 14 }}>
-          Está na hora da compra deste plano. Compra estes valores no teu broker, confirma o preço a que compraste (ou deixa o sugerido), e carrega em "Já comprei". A posição fica registada no teu relatório.
-        </div>
-
-        <div style={{ display: "flex", flexDirection: "column", gap: 8, marginBottom: 14 }}>
-          {(ordem.itens || []).map(it => (
-            <div key={it.assetId} style={{ display: "flex", alignItems: "center", gap: 10, background: "rgba(0,0,0,0.2)", borderRadius: 8, padding: "10px 12px" }}>
-              <div style={{ flex: 1 }}>
-                <div style={{ fontSize: 12, fontWeight: 700 }}>{nomeAtivo(it.assetId)}</div>
-                <div style={{ fontSize: 10, color: T.muted }}>Comprar <b style={{ color: T.aLight }}>€{it.eur.toFixed(2)}</b></div>
-              </div>
-              <div style={{ display: "flex", alignItems: "center", gap: 4 }}>
-                <span style={{ fontSize: 10, color: T.muted }}>preço:</span>
-                <input type="number" step="0.01" value={precos[it.assetId]}
-                  onChange={(e) => setPrecos(p => ({ ...p, [it.assetId]: e.target.value }))}
-                  style={{ width: 84, padding: "6px 8px", borderRadius: 6, border: `1px solid ${T.border}`, background: "rgba(0,0,0,0.3)", color: T.aLight, fontSize: 12, textAlign: "right" }} />
-              </div>
-            </div>
-          ))}
-        </div>
-
-        <button disabled={feito} onClick={() => {
-          const itens = (ordem.itens || []).map(it => ({ assetId: it.assetId, eur: it.eur, preco: parseFloat(precos[it.assetId]) || it.precoSugerido || 0 }));
-          if (itens.some(i => !i.preco)) return;
-          setFeito(true);
-          onConfirmar(itens);
-        }} style={{ width: "100%", padding: "11px", borderRadius: 9, border: "none", background: feito ? T.border : T.green, color: "#fff", fontWeight: 700, fontSize: 13, cursor: feito ? "default" : "pointer" }}>
-          {feito ? "✓ Registado" : "✓ Já comprei — registar no plano"}
-        </button>
-      </Glass>
-    );
-  };
 
   const PlanoDCA = () => {
     const s = liveSettings;
@@ -4279,152 +4429,6 @@ JSON: {"signals":[{"id":"btc","sinal":"COMPRAR|VENDER|AGUARDAR","razao":"1 frase
   };
 
   // ── Assistente IA do DCA: perguntas simples → carteira sugerida ───────────
-  const DCAAssistente = ({ carteiraAtual, onAplicar, callAI, ASSETS, T, Glass, brokersDisp = [] }) => {
-    const [aberto, setAberto] = useState(carteiraAtual.length === 0);
-    const [objetivo, setObjetivo] = useState("ferias");
-    const [horizonte, setHorizonte] = useState("2-5");
-    const [perfil, setPerfil] = useState("equilibrado");
-    const [valor, setValor] = useState(50);
-    const [freq, setFreq] = useState("semanal");
-    const [loading, setLoading] = useState(false);
-    const [sugestao, setSugestao] = useState(null);
-    const [erro, setErro] = useState(null);
-
-    if (!aberto) {
-      return (
-        <Glass style={{ padding: "14px 20px", display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-          <span style={{ fontSize: 12, color: T.muted }}>Queres refazer o plano com ajuda da IA?</span>
-          <button onClick={() => setAberto(true)} style={{ padding: "8px 16px", borderRadius: 8, border: `1px solid ${T.accent}`, background: `${T.accent}1a`, color: T.accent, fontWeight: 700, fontSize: 12, cursor: "pointer" }}>🤖 Abrir assistente</button>
-        </Glass>
-      );
-    }
-
-    const pedirSugestao = async () => {
-      setLoading(true); setErro(null); setSugestao(null);
-      // Universo restrito ao que os brokers DISPONÍVEIS conseguem negociar. Assim
-      // a IA nunca sugere algo que não consegues comprar. XTB = ETF/ações/commodity;
-      // Binance = cripto. Se não houver info de brokers, usa o conjunto seguro (XTB).
-      const brokersAtivos = brokersDisp.length ? brokersDisp : [{ assetClasses: ["etf", "stock", "commodity"], nome: "XTB" }];
-      const classesOk = new Set();
-      brokersAtivos.forEach(b => (b.assetClasses || []).forEach(c => classesOk.add(c)));
-      const catParaClasseLocal = { Crypto: "crypto", ETF: "etf", "Ação": "stock", Commodity: "commodity", Forex: "forex" };
-      const universoAtivos = ASSETS.filter(a => classesOk.has(catParaClasseLocal[a.cat]));
-      const universo = universoAtivos.map(a => `${a.id} (${a.name}, ${a.cat})`).join(", ");
-      const nomesBrokers = brokersAtivos.map(b => b.nome).join(" + ");
-      try {
-        const { result } = await callAI({
-          max_tokens: 900,
-          system: "És um educador financeiro que explica investimento passivo a leigos em português de Portugal. Sugeres carteiras diversificadas e simples para DCA. NÃO és consultor financeiro e deixas isso claro. Respondes SÓ em JSON puro, sem markdown.",
-          messages: [{ role: "user", content:
-`Um utilizador leigo quer montar um plano DCA. Dados:
-- Objetivo: ${objetivo}
-- Horizonte: ${horizonte} anos
-- Tolerância a risco: ${perfil}
-- Investe €${valor} ${freq}
-- Brokers disponíveis: ${nomesBrokers}
-
-Ativos disponíveis (usa SÓ estes ids — são os que os brokers do utilizador conseguem comprar): ${universo}
-
-Sugere uma carteira diversificada e simples (3 a 5 ativos), adequada ao perfil e horizonte. Mais conservador = mais ETFs amplos e ouro, menos/nada de crypto. Mais arrojado = pode incluir uma fatia pequena de crypto SE houver um broker de cripto disponível. NUNCA sugiras um ativo cujo id não esteja na lista acima. Os pesos têm de somar 100.
-
-Responde SÓ com este JSON:
-{"carteira":[{"id":"spy","peso":50},{"id":"gld","peso":30},{"id":"tlt","peso":20}],"explicacao":"frase curta em pt-PT a explicar a lógica","aviso":"1 frase a lembrar que não é aconselhamento e que há risco"}` }],
-        });
-        if (!result?.carteira?.length) throw new Error("Resposta sem carteira");
-        // Salvaguarda: filtra qualquer ativo que a IA tenha sugerido fora do universo.
-        const idsOk = new Set(universoAtivos.map(a => a.id));
-        result.carteira = result.carteira.filter(c => idsOk.has(c.id));
-        if (!result.carteira.length) throw new Error("A IA sugeriu ativos indisponíveis — tenta de novo");
-        setSugestao(result);
-      } catch (e) {
-        setErro(e.message || "Falha ao contactar a IA");
-      } finally { setLoading(false); }
-    };
-
-    const Opt = ({ val, cur, set, children }) => (
-      <button onClick={() => set(val)} style={{ padding: "7px 12px", borderRadius: 8, fontSize: 11, fontWeight: 600, cursor: "pointer",
-        border: `1px solid ${cur === val ? T.accent : T.border}`, background: cur === val ? `${T.accent}1a` : "transparent", color: cur === val ? T.accent : T.muted }}>{children}</button>
-    );
-
-    return (
-      <Glass style={{ padding: "20px 24px", border: `1px solid ${T.accent}33` }}>
-        <div style={{ fontSize: 14, fontWeight: 800, marginBottom: 4 }}>🤖 Assistente de Plano</div>
-        <div style={{ fontSize: 11, color: T.muted, marginBottom: 18, lineHeight: 1.6 }}>Responde a 4 perguntas simples e a IA sugere-te uma carteira. Podes ajustar tudo depois.</div>
-
-        <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
-          <div>
-            <div style={{ fontSize: 11, fontWeight: 600, marginBottom: 8 }}>Para que é o dinheiro?</div>
-            <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
-              <Opt val="ferias" cur={objetivo} set={setObjetivo}>Férias / objetivo a médio prazo</Opt>
-              <Opt val="reforma" cur={objetivo} set={setObjetivo}>Poupança longa / reforma</Opt>
-              <Opt val="crescer" cur={objetivo} set={setObjetivo}>Fazer crescer dinheiro extra</Opt>
-            </div>
-          </div>
-          <div>
-            <div style={{ fontSize: 11, fontWeight: 600, marginBottom: 8 }}>Quando vais querer usá-lo?</div>
-            <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
-              <Opt val="1-2" cur={horizonte} set={setHorizonte}>1-2 anos</Opt>
-              <Opt val="2-5" cur={horizonte} set={setHorizonte}>2-5 anos</Opt>
-              <Opt val="5+" cur={horizonte} set={setHorizonte}>Mais de 5 anos</Opt>
-            </div>
-          </div>
-          <div>
-            <div style={{ fontSize: 11, fontWeight: 600, marginBottom: 8 }}>Como te sentes sobre altos e baixos?</div>
-            <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
-              <Opt val="conservador" cur={perfil} set={setPerfil}>Prefiro seguro</Opt>
-              <Opt val="equilibrado" cur={perfil} set={setPerfil}>Equilibrado</Opt>
-              <Opt val="arrojado" cur={perfil} set={setPerfil}>Aceito risco por mais retorno</Opt>
-            </div>
-          </div>
-          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
-            <div>
-              <div style={{ fontSize: 11, fontWeight: 600, marginBottom: 8 }}>Quanto por compra (€)?</div>
-              <input type="number" min={1} value={valor} onChange={(e) => setValor(Math.max(1, parseInt(e.target.value) || 1))}
-                style={{ width: "100%", padding: "8px 12px", borderRadius: 8, border: `1px solid ${T.border}`, background: "rgba(0,0,0,0.3)", color: T.aLight, fontSize: 14, fontWeight: 700 }} />
-            </div>
-            <div>
-              <div style={{ fontSize: 11, fontWeight: 600, marginBottom: 8 }}>Com que frequência?</div>
-              <select value={freq} onChange={(e) => setFreq(e.target.value)}
-                style={{ width: "100%", padding: "8px 12px", borderRadius: 8, border: `1px solid ${T.border}`, background: "rgba(0,0,0,0.3)", color: T.aLight, fontSize: 13 }}>
-                <option value="semanal">Semanal</option>
-                <option value="quinzenal">Quinzenal</option>
-                <option value="mensal">Mensal</option>
-              </select>
-            </div>
-          </div>
-
-          <button onClick={pedirSugestao} disabled={loading} style={{ padding: "11px", borderRadius: 9, border: "none", background: loading ? T.border : T.accent, color: "#fff", fontWeight: 700, fontSize: 13, cursor: loading ? "default" : "pointer" }}>
-            {loading ? "A pensar…" : "✨ Sugerir carteira"}
-          </button>
-
-          {erro && <div style={{ fontSize: 11, color: T.red }}>⚠ {erro}</div>}
-
-          {sugestao && (
-            <div style={{ background: `${T.green}0c`, border: `1px solid ${T.green}33`, borderRadius: 10, padding: "16px 18px" }}>
-              <div style={{ fontSize: 12, fontWeight: 700, marginBottom: 10 }}>Carteira sugerida:</div>
-              <div style={{ display: "flex", flexDirection: "column", gap: 6, marginBottom: 12 }}>
-                {sugestao.carteira.map(c => {
-                  const a = ASSETS.find(x => x.id === c.id);
-                  return (
-                    <div key={c.id} style={{ display: "flex", justifyContent: "space-between", fontSize: 12 }}>
-                      <span>{a ? `${a.icon || ""} ${a.name}` : c.id}</span>
-                      <span style={{ fontWeight: 700, color: T.green }}>{c.peso}%</span>
-                    </div>
-                  );
-                })}
-              </div>
-              {sugestao.explicacao && <div style={{ fontSize: 11, color: T.muted, lineHeight: 1.6, marginBottom: 8 }}>{sugestao.explicacao}</div>}
-              {sugestao.aviso && <div style={{ fontSize: 10, color: T.gold, lineHeight: 1.5, marginBottom: 12 }}>⚠️ {sugestao.aviso}</div>}
-              <button onClick={() => { onAplicar({ carteira: sugestao.carteira, valorPeriodico: valor, frequencia: freq }); setAberto(false); }}
-                style={{ width: "100%", padding: "10px", borderRadius: 8, border: `1px solid ${T.green}`, background: `${T.green}1a`, color: T.green, fontWeight: 700, fontSize: 12, cursor: "pointer" }}>
-                ✓ Usar esta carteira
-              </button>
-            </div>
-          )}
-        </div>
-      </Glass>
-    );
-  };
 
   // ─────────────────────────────────────────────
   // RENDER: HISTÓRICO
