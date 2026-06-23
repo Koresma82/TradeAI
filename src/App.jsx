@@ -317,6 +317,7 @@ export default function TradeAI() {
     dcaAtivo: true,
     aiTradeAtivo: false,
     // Controlo granular do trading ativo (cada fonte tem o seu interruptor).
+    aiBrainMestre: false,      // chave-mestra (opção C): desbloqueia as fontes
     aiEstrategias: false,      // estratégias automáticas
     aiManualAutonomo: false,   // Cérebro AI compra sozinho
     aiManualSugestao: true,    // IA dá opinião quando peço (sem executar) — ligado, é grátis até clicar
@@ -333,6 +334,7 @@ export default function TradeAI() {
     dcaPlanos: [],            // [{ id, nome, carteira, alocacao:{tipo,valor}, frequencia, dataInicio, reequilibrar }]
     dcaAiTradePct: 20,        // % do capital reservado ao trading ativo
     dcaAiTradeValor: 0,       // OU € fixo (>0 sobrepõe a %)
+    xtbSaldo: null,           // saldo manual do XTB (introduzido pelo utilizador)
   };
   const PAPER_DEFAULTS = { capitalTotal: 1000, modoValor: "percentagem", valorFixo: 50,
     percentagem: 3, riscoPerfil: "moderado",
@@ -388,7 +390,18 @@ export default function TradeAI() {
   const simPosRef   = useRef([]);
   const simStartedRef = useRef(false); // true quando a simulação está em curso
 
-  const [tab, setTab]             = useState(typeof window !== "undefined" && window.innerWidth < 820 ? "resumo" : "dashboard");
+  const [tab, setTab]             = useState(() => {
+    // Deep-link: ?tab=dca abre direto no separador (usado no link do Telegram).
+    if (typeof window !== "undefined") {
+      try {
+        const t = new URLSearchParams(window.location.search).get("tab");
+        const validos = ["dashboard", "dca", "relatorio", "portfolio", "markets", "history", "sugestoes", "settings"];
+        if (t && validos.includes(t)) return t;
+      } catch {}
+      if (window.innerWidth < 820) return "resumo";
+    }
+    return "dashboard";
+  });
   // Resumo é um separador só-mobile: num ecrã grande, cai no Dashboard.
   useEffect(() => { if (!isMobile && tab === "resumo") setTab("dashboard"); }, [isMobile, tab]);
   const tabRef = useRef("dashboard");
@@ -414,6 +427,12 @@ export default function TradeAI() {
   // lado (0.5% round-trip); ETF/ação/commodity/forex = 0% na Alpaca. Usado para
   // mostrar o P&L não realizado JÁ LÍQUIDO (coerente com os trades fechados).
   const feeRateApp = useCallback((ref) => {
+    // Posições manuais no XTB: 0% de comissão (até 100k€/mês), mas 0,5% de
+    // conversão de moeda se o ETF não for em EUR (verificado primeiro, antes de
+    // resolver o ativo, porque ref aqui é o objeto-posição).
+    if (ref && typeof ref === "object" && ref.manualReal) {
+      return 0.005;
+    }
     const a = resolveAsset(ref);
     return a && a.cat === "Crypto" ? 0.0025 : 0;
   }, [resolveAsset]);
@@ -421,6 +440,7 @@ export default function TradeAI() {
     Math.abs(amount || 0) * feeRateApp(ref) * 2, [feeRateApp]);
 
   const [positions, setPositions] = useState([]);
+  const [manualOrders, setManualOrders] = useState([]); // ordens DCA manuais pendentes
   const [closed, setClosed]       = useState([]);
   const [strategies, setStrategies] = useState([]);
   const [objective, setObjective]   = useState("");
@@ -579,8 +599,9 @@ export default function TradeAI() {
   useEffect(() => {
     const flagDe = { strategies: "aiEstrategias", daytrading: "aiDayTrading", ai: "aiManualAutonomo" };
     const flag = flagDe[tab];
-    if (flag && !liveSettings.aiTradeAtivo && !liveSettings[flag]) setTab("dashboard");
-  }, [liveSettings.aiTradeAtivo, liveSettings.aiEstrategias, liveSettings.aiDayTrading, liveSettings.aiManualAutonomo, tab]);
+    const mestre = liveSettings.aiTradeAtivo || liveSettings.aiBrainMestre;
+    if (flag && !(mestre && (liveSettings.aiTradeAtivo || liveSettings[flag]))) setTab("dashboard");
+  }, [liveSettings.aiTradeAtivo, liveSettings.aiBrainMestre, liveSettings.aiEstrategias, liveSettings.aiDayTrading, liveSettings.aiManualAutonomo, tab]);
   // Rótulo claro e único para qualquer modo do bot — evita mostrar "LIVE"
   // genérico que confunde paper com real. Usar em todo o lado.
   const modoLabelBot = (m) => m === "real" ? "DINHEIRO REAL" : m === "paper" ? "Paper" : m === "sim" ? "Simulação" : "—";
@@ -1193,22 +1214,21 @@ JSON puro — inclui TODOS os ativos relevantes de TODAS as categorias:
         {/* ── Modo de operação: DCA (sempre) + toggle AI Trade ── */}
         {(() => {
           const s = liveSettings;
-          const docKey = botModoReal ? "realSettings" : "paperSettings";
-          const setFlag = (key, v, label) => {
-            const novo = { ...liveSettings, [key]: v };
-            if (user) import("./firebase.js").then(({ saveSetting }) => saveSetting(user.uid, docKey, novo).catch(() => {}));
-            toast(`${v ? "✅ Ligado" : "💤 Desligado"}: ${label}`, v ? "info" : "success");
-          };
           const nPlanos = Array.isArray(s.dcaPlanos) ? s.dcaPlanos.length : 0;
           const temPlano = nPlanos > 0 || (Array.isArray(s.dcaCarteira) && s.dcaCarteira.length > 0);
-          // Estado efetivo de cada fonte (respeita o toggle antigo aiTradeAtivo).
-          const ef = (k) => s.aiTradeAtivo || !!s[k];
+          // Estado efetivo: uma fonte só está "a correr" se o mestre estiver ON
+          // E a sua flag estiver ON (opção C). aiTradeAtivo (legado) força tudo.
+          const mestreOn = s.aiTradeAtivo || !!s.aiBrainMestre;
+          const ef = (k) => mestreOn && (s.aiTradeAtivo || !!s[k]);
           const fontes = [
-            { key: "aiEstrategias",    icon: "📊", nome: "Estratégias",     desc: "As tuas estratégias compram/vendem sozinhas." },
-            { key: "aiManualAutonomo", icon: "🤖", nome: "Compras autónomas (IA)", desc: "O Cérebro AI decide e compra sozinho." },
-            { key: "aiDayTrading",     icon: "⚡", nome: "Day Trading",      desc: "Scalping rápido com IA, várias vezes ao dia." },
+            { key: "aiEstrategias",    icon: "📊", nome: "Estratégias" },
+            { key: "aiManualAutonomo", icon: "🤖", nome: "Compras autónomas" },
+            { key: "aiDayTrading",     icon: "⚡", nome: "Day Trading" },
           ];
           const algumOn = fontes.some(f => ef(f.key));
+          const Estado = ({ ativo }) => (
+            <span style={{ fontSize: 10, fontWeight: 700, color: ativo ? T.green : T.muted }}>{ativo ? "● Ativo" : "○ Desativado"}</span>
+          );
           return (
             <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
               {/* DCA — núcleo */}
@@ -1224,53 +1244,36 @@ JSON puro — inclui TODOS os ativos relevantes de TODAS as categorias:
                     ? `${nPlanos > 0 ? nPlanos + " plano(s)" : "Plano"} ativo(s), €${s.dcaValorMensal || 0}/período repartido por objetivos. O núcleo passivo nunca para.`
                     : "Ainda sem planos. Vai a 'Plano DCA' para criar com ajuda da IA."}
                 </div>
+                {manualOrders.length > 0 && (
+                  <div onClick={() => setTab("dca")} style={{ fontSize: 10.5, color: T.gold, marginTop: 8, cursor: "pointer", fontWeight: 700, background: `${T.gold}15`, padding: "6px 10px", borderRadius: 6 }}>
+                    🔔 {manualOrders.length} compra(s) DCA à tua espera — clica para confirmar
+                  </div>
+                )}
                 <div onClick={() => setTab("dca")} style={{ fontSize: 10, color: T.accent, marginTop: 8, cursor: "pointer", fontWeight: 600 }}>Abrir Plano DCA →</div>
               </Glass>
 
-              {/* Trading ativo — controlo granular por fonte */}
+              {/* Trading ativo — INDICADOR de estado (read-only). Controlos nas Definições. */}
               <Glass style={{ padding: "16px 20px", background: algumOn ? `${T.gold}08` : "transparent", border: `1px solid ${algumOn ? T.gold + "33" : T.border}` }}>
-                <div style={{ fontSize: 12, fontWeight: 700, marginBottom: 4 }}>⚡ Trading ativo (opcional)</div>
-                <div style={{ fontSize: 10, color: T.muted, lineHeight: 1.5, marginBottom: 14 }}>
-                  Liga só o que quiseres experimentar. Cada fonte corre em paralelo com o DCA, numa fatia separada do capital ({s.dcaPctCapital ? 100 - s.dcaPctCapital : 20}%). Com tudo desligado, só gastas em IA o assistente do DCA.
+                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 10 }}>
+                  <span style={{ fontSize: 12, fontWeight: 700 }}>⚡ Trading ativo</span>
+                  <span style={{ fontSize: 10, fontWeight: 700, color: mestreOn ? T.gold : T.muted }}>AI Brain: {mestreOn ? "● Ativado" : "○ Desativado"}</span>
                 </div>
-                <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
-                  {fontes.map(f => {
-                    const on = ef(f.key);
-                    const locked = s.aiTradeAtivo; // se o toggle antigo está on, força todas
-                    return (
-                      <div key={f.key} style={{ display: "flex", alignItems: "center", gap: 12, padding: "8px 0", borderTop: `1px solid ${T.border}` }}>
-                        <span style={{ fontSize: 16 }}>{f.icon}</span>
-                        <div style={{ flex: 1 }}>
-                          <div style={{ fontSize: 11.5, fontWeight: 700 }}>{f.nome}</div>
-                          <div style={{ fontSize: 9.5, color: T.muted, lineHeight: 1.4 }}>{f.desc}</div>
-                        </div>
-                        <div onClick={() => !locked && setFlag(f.key, !s[f.key], f.nome)} style={{ cursor: locked ? "not-allowed" : "pointer", flexShrink: 0, opacity: locked ? 0.5 : 1 }}>
-                          <div style={{ width: 40, height: 22, borderRadius: 11, background: on ? T.gold : "rgba(255,255,255,0.1)", position: "relative", transition: "all 0.2s" }}>
-                            <div style={{ position: "absolute", top: 3, left: on ? 20 : 2, width: 16, height: 16, borderRadius: "50%", background: "#fff", transition: "left 0.2s" }} />
-                          </div>
-                        </div>
+                {mestreOn ? (
+                  <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+                    {fontes.map(f => (
+                      <div key={f.key} style={{ display: "flex", alignItems: "center", gap: 10, fontSize: 11 }}>
+                        <span style={{ fontSize: 14 }}>{f.icon}</span>
+                        <span style={{ flex: 1, fontWeight: 600 }}>{f.nome}</span>
+                        <Estado ativo={ef(f.key)} />
                       </div>
-                    );
-                  })}
-                </div>
-                {/* Sugestão a pedido (não executa, não gasta até clicares) */}
-                <div style={{ display: "flex", alignItems: "center", gap: 12, padding: "10px 0 0", borderTop: `1px solid ${T.border}`, marginTop: 8 }}>
-                  <span style={{ fontSize: 16 }}>💡</span>
-                  <div style={{ flex: 1 }}>
-                    <div style={{ fontSize: 11.5, fontWeight: 700 }}>Sugestão da IA a pedido</div>
-                    <div style={{ fontSize: 9.5, color: T.muted, lineHeight: 1.4 }}>A IA dá opinião quando TU pedes, antes de comprares. Não executa nada sozinha. Só gasta tokens quando clicas.</div>
+                    ))}
                   </div>
-                  <div onClick={() => setFlag("aiManualSugestao", !s.aiManualSugestao, "Sugestão a pedido")} style={{ cursor: "pointer", flexShrink: 0 }}>
-                    <div style={{ width: 40, height: 22, borderRadius: 11, background: s.aiManualSugestao ? T.blue : "rgba(255,255,255,0.1)", position: "relative", transition: "all 0.2s" }}>
-                      <div style={{ position: "absolute", top: 3, left: s.aiManualSugestao ? 20 : 2, width: 16, height: 16, borderRadius: "50%", background: "#fff", transition: "left 0.2s" }} />
-                    </div>
-                  </div>
-                </div>
-                {s.aiTradeAtivo && (
-                  <div style={{ fontSize: 9.5, color: T.gold, marginTop: 10, lineHeight: 1.5 }}>
-                    ⚠️ O interruptor antigo "AI Trade" está ligado e força as três fontes. Desliga-o nas Definições para controlares cada uma à parte.
+                ) : (
+                  <div style={{ fontSize: 10, color: T.muted, lineHeight: 1.5 }}>
+                    Desligado. O AI Brain é a chave-mestra do trading ativo — liga-o nas Definições para desbloquear Estratégias, Compras Autónomas e Day Trading. Com ele desligado, só o DCA passivo corre.
                   </div>
                 )}
+                <div onClick={() => setTab("settings")} style={{ fontSize: 10, color: T.accent, marginTop: 10, cursor: "pointer", fontWeight: 600 }}>Gerir nas Definições →</div>
               </Glass>
             </div>
           );
@@ -2328,7 +2331,14 @@ JSON: {"signals":[{"id":"btc","sinal":"COMPRAR|VENDER|AGUARDAR","razao":"1 frase
     // organização), competindo com o bot. Poupa tokens e evita rate-limit.
     // Só corre se o AI Trade estiver ligado — com ele desligado (modo DCA), não
     // faz sentido gastar tokens a gerar sinais que ninguém usa.
-    const run = () => { if (!botActiveRef.current && liveSettingsRef.current?.aiTradeAtivo) fetchMarketSignals(); };
+    const run = () => {
+      const ls = liveSettingsRef.current || {};
+      const mestre = ls.aiTradeAtivo || ls.aiBrainMestre;
+      // Só gera sinais se o AI Brain (mestre) estiver ligado E alguma fonte que os
+      // use (estratégias ou compras autónomas). Senão, não gasta tokens.
+      const usaSinais = mestre && (ls.aiTradeAtivo || ls.aiEstrategias || ls.aiManualAutonomo);
+      if (!botActiveRef.current && usaSinais) fetchMarketSignals();
+    };
     const timer = setTimeout(run, 3000);
     const iv = setInterval(run, 5 * 60 * 1000);
     return () => { clearTimeout(timer); clearInterval(iv); };
@@ -3649,6 +3659,238 @@ JSON: {"signals":[{"id":"btc","sinal":"COMPRAR|VENDER|AGUARDAR","razao":"1 frase
 
   // ── PÁGINA: Plano DCA (o núcleo passivo) ──────────────────────────────────
   // Onde o utilizador define o plano com ajuda da IA. O bot é que executa.
+  // ── PÁGINA: Relatório Financeiro ──────────────────────────────────────────
+  // Posição consolidada (saldo real dos brokers) + valor por plano DCA + por
+  // fonte de trading, com P&L líquido de comissões.
+  const Relatorio = () => {
+    const brokers = Array.isArray(botStatus?.brokers) ? botStatus.brokers : [];
+    const precoDe = (id) => { const a = assets.find(x => x.id === id); return a ? a.price : null; };
+    const fmt = (v) => `${v < 0 ? "-" : ""}€${Math.abs(v).toLocaleString("pt-PT", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+
+    // Posições abertas agrupadas por fonte (DCA por plano; trading por origem).
+    const abertas = positions.filter(p => p.status === "ABERTA" || !p.status);
+    const valorPos = (p) => { const px = precoDe(p.assetId); return px != null ? p.units * px : (p.amount || 0); };
+    const plPos = (p) => { const px = precoDe(p.assetId); if (px == null) return 0; return (px - p.entryPrice) * p.units - roundTripFeeApp(p, p.amount); };
+
+    // DCA por plano
+    const planos = Array.isArray(liveSettings.dcaPlanos) ? liveSettings.dcaPlanos : [];
+    const dcaPorPlano = planos.map(pl => {
+      const ps = abertas.filter(p => p.stratId === "dca" && (p.planId || "principal") === pl.id);
+      const investido = ps.reduce((a, p) => a + (p.amount || 0), 0);
+      const valor = ps.reduce((a, p) => a + valorPos(p), 0);
+      const pl_ = ps.reduce((a, p) => a + plPos(p), 0);
+      return { nome: pl.nome, n: ps.length, investido, valor, pl: pl_, dataInicio: pl.dataInicio };
+    }).filter(x => x.n > 0);
+
+    // DCA sem plano (legado) ou plano "principal"
+    const dcaOutras = abertas.filter(p => p.stratId === "dca" && !planos.find(pl => pl.id === (p.planId || "principal")));
+    if (dcaOutras.length) {
+      dcaPorPlano.push({ nome: "DCA (principal)", n: dcaOutras.length,
+        investido: dcaOutras.reduce((a, p) => a + (p.amount || 0), 0),
+        valor: dcaOutras.reduce((a, p) => a + valorPos(p), 0),
+        pl: dcaOutras.reduce((a, p) => a + plPos(p), 0), dataInicio: null });
+    }
+
+    // Trading ativo por fonte
+    const fonteDe = (p) => p.stratId === "daytrading" ? "Day Trading"
+      : p.stratId === "manual" ? "Compras manuais"
+      : p.stratId === "ai-brain" ? "Cérebro AI" : "Estratégias";
+    const ativo = abertas.filter(p => p.stratId !== "dca");
+    const porFonte = {};
+    for (const p of ativo) {
+      const f = fonteDe(p);
+      if (!porFonte[f]) porFonte[f] = { nome: f, n: 0, investido: 0, valor: 0, pl: 0 };
+      porFonte[f].n++; porFonte[f].investido += p.amount || 0; porFonte[f].valor += valorPos(p); porFonte[f].pl += plPos(p);
+    }
+    const fontes = Object.values(porFonte);
+
+    // Totais
+    const totalDcaValor = dcaPorPlano.reduce((a, x) => a + x.valor, 0);
+    const totalDcaPL = dcaPorPlano.reduce((a, x) => a + x.pl, 0);
+    const totalAtivoValor = fontes.reduce((a, x) => a + x.valor, 0);
+    const totalAtivoPL = fontes.reduce((a, x) => a + x.pl, 0);
+
+    // P&L realizado (trades fechados), líquido de comissões
+    const fechados = closed.filter(t => t.status && t.status !== "ABERTA");
+    const plRealizado = fechados.reduce((a, t) => {
+      const px = t.exitPrice ?? t.precoSaida;
+      if (px == null) return a + (t.pl || t.lucro || 0);
+      return a + ((px - t.entryPrice) * t.units - roundTripFeeApp(t, t.amount));
+    }, 0);
+
+    const Linha = ({ nome, sub, n, investido, valor, pl, cor }) => (
+      <div style={{ display: "flex", alignItems: "center", gap: 12, padding: "12px 0", borderTop: `1px solid ${T.border}` }}>
+        <div style={{ flex: 1 }}>
+          <div style={{ fontSize: 12, fontWeight: 700 }}>{nome}</div>
+          {sub && <div style={{ fontSize: 9.5, color: T.muted }}>{sub}</div>}
+        </div>
+        <div style={{ textAlign: "right", minWidth: 90 }}>
+          <div style={{ fontSize: 9, color: T.muted, textTransform: "uppercase", letterSpacing: "0.08em" }}>Investido</div>
+          <div style={{ fontSize: 12, fontWeight: 600 }}>{fmt(investido)}</div>
+        </div>
+        <div style={{ textAlign: "right", minWidth: 90 }}>
+          <div style={{ fontSize: 9, color: T.muted, textTransform: "uppercase", letterSpacing: "0.08em" }}>Valor atual</div>
+          <div style={{ fontSize: 12, fontWeight: 600 }}>{fmt(valor)}</div>
+        </div>
+        <div style={{ textAlign: "right", minWidth: 90 }}>
+          <div style={{ fontSize: 9, color: T.muted, textTransform: "uppercase", letterSpacing: "0.08em" }}>P&L líq.</div>
+          <div style={{ fontSize: 12, fontWeight: 700, color: pl >= 0 ? T.green : T.red }}>{pl >= 0 ? "+" : ""}{fmt(pl)}</div>
+        </div>
+      </div>
+    );
+
+    return (
+      <div style={{ display: "flex", flexDirection: "column", gap: 16, maxWidth: 940 }}>
+        <Glass style={{ padding: "20px 24px" }}>
+          <div style={{ fontSize: 16, fontWeight: 800, marginBottom: 4 }}>📊 Relatório Financeiro</div>
+          <div style={{ fontSize: 11, color: T.muted, lineHeight: 1.6 }}>A tua posição consolidada: saldo real nos brokers, valor por plano DCA e por fonte de trading. Todos os P&L são líquidos de comissões.</div>
+        </Glass>
+
+        {/* Saldo real por broker */}
+        <Glass style={{ padding: "20px 24px" }}>
+          <div style={{ fontSize: 14, fontWeight: 800, marginBottom: 14 }}>🏦 Contas nos brokers</div>
+          {brokers.length === 0 ? (
+            <div style={{ fontSize: 11, color: T.muted, lineHeight: 1.6 }}>
+              Sem dados de brokers ainda. Em modo simulação não há saldo real. Quando ligares um broker (paper ou real), o saldo aparece aqui automaticamente.
+            </div>
+          ) : (
+            <div style={{ display: "flex", flexDirection: "column", gap: 0 }}>
+              {brokers.map(b => {
+                const classes = (b.assetClasses || []).join(", ");
+                const fazDca = (b.assetClasses || []).some(c => ["etf", "stock", "crypto", "commodity"].includes(c));
+                return (
+                  <div key={b.id} style={{ display: "flex", alignItems: "center", gap: 12, padding: "12px 0", borderTop: `1px solid ${T.border}` }}>
+                    <div style={{ width: 9, height: 9, borderRadius: "50%", background: b.conectado ? T.green : T.muted, flexShrink: 0 }} />
+                    <div style={{ flex: 1 }}>
+                      <div style={{ fontSize: 12.5, fontWeight: 700 }}>{b.nome}</div>
+                      <div style={{ fontSize: 9.5, color: T.muted }}>Negoceia: {classes || "—"} {fazDca ? "· pode fazer DCA" : ""}</div>
+                      {b.erro && <div style={{ fontSize: 9, color: T.red }}>⚠ {b.erro}</div>}
+                    </div>
+                    <div style={{ textAlign: "right" }}>
+                      {b.id === "xtb" ? (
+                        <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+                          <span style={{ fontSize: 10, color: T.muted }}>€</span>
+                          <input type="number" step="0.01" placeholder="saldo"
+                            defaultValue={liveSettings.xtbSaldo != null ? liveSettings.xtbSaldo : ""}
+                            onBlur={(e) => {
+                              if (!user) return;
+                              const v = e.target.value === "" ? null : Math.max(0, parseFloat(e.target.value) || 0);
+                              const docKey = botModoReal ? "realSettings" : "paperSettings";
+                              const novo = { ...liveSettings, xtbSaldo: v };
+                              import("./firebase.js").then(({ saveSetting }) => saveSetting(user.uid, docKey, novo).catch(() => {}));
+                              toast("💾 Saldo XTB atualizado", "success");
+                            }}
+                            style={{ width: 100, padding: "6px 8px", borderRadius: 6, border: `1px solid ${T.border}`, background: "rgba(0,0,0,0.3)", color: T.aLight, fontSize: 13, fontWeight: 700, textAlign: "right" }} />
+                        </div>
+                      ) : b.saldo != null ? (
+                        <div style={{ fontSize: 14, fontWeight: 800 }}>{b.saldo.toLocaleString("pt-PT", { minimumFractionDigits: 2, maximumFractionDigits: 2 })} <span style={{ fontSize: 10, color: T.muted }}>{b.moeda}</span></div>
+                      ) : (
+                        <div style={{ fontSize: 10, color: T.muted }}>{b.conectado ? (botModoReal ? "—" : "saldo só em live") : "não ligado"}</div>
+                      )}
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          )}
+          <div style={{ fontSize: 9.5, color: T.muted, marginTop: 12, lineHeight: 1.5, borderTop: `1px solid ${T.border}`, paddingTop: 10 }}>
+            💡 Cada plano DCA só pode usar o broker que negoceia os seus ativos. Ex.: um plano de ETFs sai do XTB/IBKR; um de cripto sai do Binance. A app escolhe o broker certo conforme a carteira de cada plano.
+            <br />🏦 <b>XTB:</b> 0% de comissão em ETFs/ações até 100k€/mês. Conta com ~0,5% de conversão de moeda se comprares ETFs em USD — escolhe versões UCITS em EUR para evitar. Os P&L abaixo já descontam estes custos.
+          </div>
+        </Glass>
+
+        {/* Planos DCA */}
+        <Glass style={{ padding: "20px 24px", background: `${T.green}06` }}>
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 4 }}>
+            <span style={{ fontSize: 14, fontWeight: 800 }}>🎯 Planos DCA</span>
+            <span style={{ fontSize: 11, fontWeight: 700, color: totalDcaPL >= 0 ? T.green : T.red }}>{totalDcaPL >= 0 ? "+" : ""}{fmt(totalDcaPL)}</span>
+          </div>
+          {dcaPorPlano.length === 0 ? (
+            <div style={{ fontSize: 11, color: T.muted, marginTop: 8 }}>Ainda sem posições DCA. Quando o bot fizer as primeiras compras, aparecem aqui por plano.</div>
+          ) : dcaPorPlano.map((x, i) => (
+            <Linha key={i} nome={x.nome} sub={`${x.n} posição(ões)${x.dataInicio ? " · desde " + new Date(x.dataInicio).toLocaleDateString("pt-PT") : ""}`} investido={x.investido} valor={x.valor} pl={x.pl} />
+          ))}
+        </Glass>
+
+        {/* Trading ativo */}
+        <Glass style={{ padding: "20px 24px", background: `${T.gold}06` }}>
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 4 }}>
+            <span style={{ fontSize: 14, fontWeight: 800 }}>⚡ Trading ativo</span>
+            <span style={{ fontSize: 11, fontWeight: 700, color: totalAtivoPL >= 0 ? T.green : T.red }}>{totalAtivoPL >= 0 ? "+" : ""}{fmt(totalAtivoPL)}</span>
+          </div>
+          {fontes.length === 0 ? (
+            <div style={{ fontSize: 11, color: T.muted, marginTop: 8 }}>Sem posições de trading ativo abertas.</div>
+          ) : fontes.map((x, i) => (
+            <Linha key={i} nome={x.nome} sub={`${x.n} posição(ões)`} investido={x.investido} valor={x.valor} pl={x.pl} />
+          ))}
+        </Glass>
+
+        {/* Totais */}
+        <Glass style={{ padding: "20px 24px" }}>
+          <div style={{ fontSize: 14, fontWeight: 800, marginBottom: 14 }}>Σ Resumo</div>
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 14 }}>
+            <div><div style={{ fontSize: 10, color: T.muted, textTransform: "uppercase" }}>Valor DCA</div><div style={{ fontSize: 18, fontWeight: 800 }}>{fmt(totalDcaValor)}</div></div>
+            <div><div style={{ fontSize: 10, color: T.muted, textTransform: "uppercase" }}>Valor trading ativo</div><div style={{ fontSize: 18, fontWeight: 800 }}>{fmt(totalAtivoValor)}</div></div>
+            <div><div style={{ fontSize: 10, color: T.muted, textTransform: "uppercase" }}>P&L não realizado</div><div style={{ fontSize: 16, fontWeight: 800, color: (totalDcaPL + totalAtivoPL) >= 0 ? T.green : T.red }}>{(totalDcaPL + totalAtivoPL) >= 0 ? "+" : ""}{fmt(totalDcaPL + totalAtivoPL)}</div></div>
+            <div><div style={{ fontSize: 10, color: T.muted, textTransform: "uppercase" }}>P&L realizado (fechados)</div><div style={{ fontSize: 16, fontWeight: 800, color: plRealizado >= 0 ? T.green : T.red }}>{plRealizado >= 0 ? "+" : ""}{fmt(plRealizado)}</div></div>
+          </div>
+          <div style={{ fontSize: 9.5, color: T.muted, marginTop: 14, lineHeight: 1.5 }}>Todos os valores de P&L já descontam as comissões estimadas de entrada e saída (round-trip), para refletirem o ganho/perda real.</div>
+        </Glass>
+      </div>
+    );
+  };
+
+  // ── Card de uma ordem DCA manual pendente: mostra o que comprar, deixa editar
+  //    o preço real, e confirma (regista a posição). ──
+  const OrdemManualCard = ({ ordem, ASSETS, T, Glass, precoAtual, onConfirmar }) => {
+    const nomeAtivo = (id) => { const a = ASSETS.find(x => x.id === id); return a ? `${a.icon || ""} ${a.name}` : id; };
+    // Estado local: preço por item (sugerido = preço atual ou o que veio na ordem).
+    const [precos, setPrecos] = useState(() => {
+      const o = {};
+      (ordem.itens || []).forEach(it => { o[it.assetId] = it.precoSugerido || precoAtual(it.assetId) || ""; });
+      return o;
+    });
+    const [feito, setFeito] = useState(false);
+
+    return (
+      <Glass style={{ padding: "18px 22px", border: `1px solid ${T.gold}55`, background: `${T.gold}0c` }}>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 10 }}>
+          <div style={{ fontSize: 13, fontWeight: 800 }}>🔔 Compra pendente — {ordem.planNome}</div>
+          <div style={{ fontSize: 11, fontWeight: 700, color: T.gold }}>€{(ordem.valorTotal || 0).toFixed(2)}</div>
+        </div>
+        <div style={{ fontSize: 10.5, color: T.muted, lineHeight: 1.6, marginBottom: 14 }}>
+          Está na hora da compra deste plano. Compra estes valores no teu broker, confirma o preço a que compraste (ou deixa o sugerido), e carrega em "Já comprei". A posição fica registada no teu relatório.
+        </div>
+
+        <div style={{ display: "flex", flexDirection: "column", gap: 8, marginBottom: 14 }}>
+          {(ordem.itens || []).map(it => (
+            <div key={it.assetId} style={{ display: "flex", alignItems: "center", gap: 10, background: "rgba(0,0,0,0.2)", borderRadius: 8, padding: "10px 12px" }}>
+              <div style={{ flex: 1 }}>
+                <div style={{ fontSize: 12, fontWeight: 700 }}>{nomeAtivo(it.assetId)}</div>
+                <div style={{ fontSize: 10, color: T.muted }}>Comprar <b style={{ color: T.aLight }}>€{it.eur.toFixed(2)}</b></div>
+              </div>
+              <div style={{ display: "flex", alignItems: "center", gap: 4 }}>
+                <span style={{ fontSize: 10, color: T.muted }}>preço:</span>
+                <input type="number" step="0.01" value={precos[it.assetId]}
+                  onChange={(e) => setPrecos(p => ({ ...p, [it.assetId]: e.target.value }))}
+                  style={{ width: 84, padding: "6px 8px", borderRadius: 6, border: `1px solid ${T.border}`, background: "rgba(0,0,0,0.3)", color: T.aLight, fontSize: 12, textAlign: "right" }} />
+              </div>
+            </div>
+          ))}
+        </div>
+
+        <button disabled={feito} onClick={() => {
+          const itens = (ordem.itens || []).map(it => ({ assetId: it.assetId, eur: it.eur, preco: parseFloat(precos[it.assetId]) || it.precoSugerido || 0 }));
+          if (itens.some(i => !i.preco)) return;
+          setFeito(true);
+          onConfirmar(itens);
+        }} style={{ width: "100%", padding: "11px", borderRadius: 9, border: "none", background: feito ? T.border : T.green, color: "#fff", fontWeight: 700, fontSize: 13, cursor: feito ? "default" : "pointer" }}>
+          {feito ? "✓ Registado" : "✓ Já comprei — registar no plano"}
+        </button>
+      </Glass>
+    );
+  };
+
   const PlanoDCA = () => {
     const s = liveSettings;
     const docKey = botModoReal ? "realSettings" : "paperSettings";
@@ -3662,6 +3904,17 @@ JSON: {"signals":[{"id":"btc","sinal":"COMPRAR|VENDER|AGUARDAR","razao":"1 frase
     // dcaPlanos, converte-o num plano "Principal" da primeira vez.
     const planos = Array.isArray(s.dcaPlanos) ? s.dcaPlanos : [];
     const nomeAtivo = (id) => { const a = ASSETS.find(x => x.id === id); return a ? `${a.icon || ""} ${a.name}` : id; };
+    // Dado a carteira de um plano, descobre que broker(s) conseguem negociá-la.
+    // Mapeia a categoria de cada ativo às assetClasses dos brokers disponíveis.
+    const brokersDisp = Array.isArray(botStatus?.brokers) ? botStatus.brokers : [];
+    const catParaClasse = { Crypto: "crypto", ETF: "etf", "Ação": "stock", Commodity: "commodity", Forex: "forex" };
+    const brokerDoPlano = (carteira) => {
+      if (!carteira?.length || !brokersDisp.length) return null;
+      const classesNec = [...new Set(carteira.map(c => { const a = ASSETS.find(x => x.id === c.id); return a ? catParaClasse[a.cat] : null; }).filter(Boolean))];
+      // Brokers que cobrem TODAS as classes necessárias.
+      const compat = brokersDisp.filter(b => classesNec.every(cl => (b.assetClasses || []).includes(cl)));
+      return { classesNec, compat };
+    };
     const bolo = Number(s.dcaValorMensal) || 0;
 
     // Repartição: calcula quanto € vai cada plano + a fatia AI Trade.
@@ -3705,6 +3958,31 @@ JSON: {"signals":[{"id":"btc","sinal":"COMPRAR|VENDER|AGUARDAR","razao":"1 frase
             ⚠️ Não é aconselhamento financeiro. A IA ajuda-te a montar, mas a decisão é tua. Os mercados podem cair no curto prazo — o DCA funciona melhor em horizontes de vários anos.
           </div>
         </Glass>
+
+
+        {/* Ordens DCA manuais pendentes — "compra isto e confirma" */}
+        {manualOrders.length > 0 && manualOrders.map(ordem => (
+          <OrdemManualCard key={ordem.id} ordem={ordem} ASSETS={ASSETS} T={T} Glass={Glass}
+            precoAtual={(id) => { const a = assets.find(x => x.id === id); return a ? a.price : null; }}
+            onConfirmar={(itens) => {
+              if (!user) return;
+              const docKey = botModoReal ? "realSettings" : "paperSettings";
+              // Desconto automático do saldo manual (XTB) se a compra foi nesse broker.
+              const gasto = itens.reduce((a, it) => a + (Number(it.eur) || 0), 0);
+              if ((ordem.broker === "xtb" || !ordem.broker) && liveSettings.xtbSaldo != null) {
+                const novoSaldo = Math.max(0, +(Number(liveSettings.xtbSaldo) - gasto).toFixed(2));
+                const novo = { ...liveSettings, xtbSaldo: novoSaldo };
+                import("./firebase.js").then(({ saveSetting }) => saveSetting(user.uid, docKey, novo).catch(() => {}));
+              }
+              import("./firebase.js").then(({ sendCommand }) => {
+                sendCommand(user.uid, {
+                  type: "DCA_MANUAL_CONFIRM", ordemId: ordem.id, planId: ordem.planId,
+                  planNome: ordem.planNome, broker: ordem.broker, itens,
+                }).then(() => toast("✅ Compra registada — posição adicionada ao teu plano", "success"))
+                  .catch(() => toast("Não consegui registar. Tenta de novo.", "error"));
+              });
+            }} />
+        ))}
 
         {/* Bolo mensal + repartição */}
         <Glass style={{ padding: "20px 24px" }}>
@@ -3759,6 +4037,8 @@ JSON: {"signals":[{"id":"btc","sinal":"COMPRAR|VENDER|AGUARDAR","razao":"1 frase
         {planos.map((p, idx) => {
           const somaPesos = (p.carteira || []).reduce((a, c) => a + (c.peso || 0), 0);
           const diasAtivo = p.dataInicio ? Math.floor((Date.now() - p.dataInicio) / 86400000) : null;
+          // Valor já investido neste plano (soma das posições DCA deste plano).
+          const investidoPlano = positions.filter(x => (x.status === "ABERTA" || !x.status) && x.stratId === "dca" && (x.planId || "principal") === p.id).reduce((a, x) => a + (x.amount || 0), 0);
           return (
             <Glass key={p.id} style={{ padding: "18px 22px" }}>
               <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 12, gap: 10 }}>
@@ -3771,6 +4051,74 @@ JSON: {"signals":[{"id":"btc","sinal":"COMPRAR|VENDER|AGUARDAR","razao":"1 frase
               {diasAtivo != null && (
                 <div style={{ fontSize: 9.5, color: T.muted, marginBottom: 10 }}>📅 Início: {new Date(p.dataInicio).toLocaleDateString("pt-PT")} ({diasAtivo} dias) — desempenho mede-se a partir daqui</div>
               )}
+
+              {/* Meta do plano — objetivo e progresso */}
+              <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 10, flexWrap: "wrap" }}>
+                <span style={{ fontSize: 9.5, color: T.muted }}>🎯 Meta:</span>
+                <span style={{ fontSize: 11, color: T.muted }}>€</span>
+                <input type="number" min={0} placeholder="objetivo" value={p.meta || ""}
+                  onChange={(e) => updPlano(p.id, { meta: e.target.value === "" ? null : Math.max(0, parseInt(e.target.value) || 0) })}
+                  style={{ width: 90, padding: "5px 8px", borderRadius: 6, border: `1px solid ${T.border}`, background: "rgba(0,0,0,0.3)", color: T.aLight, fontSize: 12, fontWeight: 700 }} />
+                {p.meta > 0 && (
+                  <div style={{ flex: 1, minWidth: 140, display: "flex", alignItems: "center", gap: 8 }}>
+                    <div style={{ flex: 1, height: 8, borderRadius: 4, background: "rgba(255,255,255,0.08)", overflow: "hidden" }}>
+                      <div style={{ width: `${Math.min(100, (investidoPlano / p.meta) * 100)}%`, height: "100%", background: T.green }} />
+                    </div>
+                    <span style={{ fontSize: 9.5, color: T.muted, whiteSpace: "nowrap" }}>€{Math.round(investidoPlano)} / €{p.meta} ({Math.round((investidoPlano / p.meta) * 100)}%)</span>
+                  </div>
+                )}
+              </div>
+              {p.meta > 0 && investidoPlano > 0 && diasAtivo > 7 && (() => {
+                // Estimativa de quando atinge a meta, ao ritmo atual.
+                const porDia = investidoPlano / diasAtivo;
+                const faltam = p.meta - investidoPlano;
+                if (porDia <= 0 || faltam <= 0) return null;
+                const diasFalta = Math.ceil(faltam / porDia);
+                const data = new Date(Date.now() + diasFalta * 86400000);
+                return <div style={{ fontSize: 9, color: T.muted, marginBottom: 10 }}>Ao ritmo atual, atinges a meta por volta de {data.toLocaleDateString("pt-PT", { month: "long", year: "numeric" })}.</div>;
+              })()}
+
+              {/* Indicação do broker que executa este plano (conforme a carteira) */}
+              {(() => {
+                const bp = brokerDoPlano(p.carteira);
+                if (!bp || !p.carteira?.length) return null;
+                if (bp.compat.length === 0) return (
+                  <div style={{ fontSize: 9.5, color: T.gold, marginBottom: 10, background: `${T.gold}10`, padding: "6px 10px", borderRadius: 6 }}>
+                    ⚠ Nenhum broker ligado negoceia todos estes ativos ({bp.classesNec.join(", ")}). Liga o broker certo ou ajusta a carteira.
+                  </div>
+                );
+                if (bp.compat.length === 1) return (
+                  <div style={{ fontSize: 9.5, color: T.muted, marginBottom: 10 }}>🏦 Executado via <b style={{ color: T.aLight }}>{bp.compat[0].nome}</b> (único compatível com esta carteira)</div>
+                );
+                // Vários compatíveis → deixa escolher
+                return (
+                  <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 10 }}>
+                    <span style={{ fontSize: 9.5, color: T.muted }}>🏦 Broker:</span>
+                    <select value={p.brokerId || bp.compat[0].id} onChange={(e) => updPlano(p.id, { brokerId: e.target.value })}
+                      style={{ padding: "4px 8px", borderRadius: 6, border: `1px solid ${T.border}`, background: "rgba(0,0,0,0.3)", color: T.aLight, fontSize: 10 }}>
+                      {bp.compat.map(b => <option key={b.id} value={b.id}>{b.nome}</option>)}
+                    </select>
+                  </div>
+                );
+              })()}
+
+              {/* Modo de execução: automático (bot compra) ou manual (avisa-te) */}
+              <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 12, flexWrap: "wrap" }}>
+                <span style={{ fontSize: 9.5, color: T.muted }}>Execução:</span>
+                <button onClick={() => updPlano(p.id, { modoExecucao: "auto" })}
+                  style={{ padding: "5px 10px", borderRadius: 6, fontSize: 10, fontWeight: 700, cursor: "pointer", border: `1px solid ${(p.modoExecucao || "auto") === "auto" ? T.green : T.border}`, background: (p.modoExecucao || "auto") === "auto" ? `${T.green}1a` : "transparent", color: (p.modoExecucao || "auto") === "auto" ? T.green : T.muted }}>
+                  🤖 Automático
+                </button>
+                <button onClick={() => updPlano(p.id, { modoExecucao: "manual" })}
+                  style={{ padding: "5px 10px", borderRadius: 6, fontSize: 10, fontWeight: 700, cursor: "pointer", border: `1px solid ${p.modoExecucao === "manual" ? T.gold : T.border}`, background: p.modoExecucao === "manual" ? `${T.gold}1a` : "transparent", color: p.modoExecucao === "manual" ? T.gold : T.muted }}>
+                  🔔 Manual (avisa-me)
+                </button>
+                <span style={{ fontSize: 9, color: T.muted, flex: 1, minWidth: 200 }}>
+                  {p.modoExecucao === "manual"
+                    ? "O bot avisa-te quando for hora; compras no teu broker e confirmas."
+                    : "O bot compra sozinho (precisa de broker com API: Binance p/ cripto)."}
+                </span>
+              </div>
 
               {/* Alocação */}
               <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 12 }}>
@@ -3812,6 +4160,67 @@ JSON: {"signals":[{"id":"btc","sinal":"COMPRAR|VENDER|AGUARDAR","razao":"1 frase
                 <button onClick={() => { const sel = document.getElementById(`add-${p.id}`); if (sel?.value) updPlano(p.id, { carteira: [...(p.carteira || []), { id: sel.value, peso: 0 }] }); }}
                   style={{ padding: "7px 14px", borderRadius: 8, border: `1px solid ${T.accent}`, background: `${T.accent}1a`, color: T.accent, fontWeight: 700, fontSize: 11, cursor: "pointer" }}>+ Ativo</button>
               </div>
+
+              {/* Projeção de ganhos — cenários, com avisos claros */}
+              {(p.carteira || []).length > 0 && (() => {
+                const eurPlano = planosEur[p.id] || 0;
+                const porMes = p.frequencia === "semanal" ? eurPlano * 4.33 : p.frequencia === "quinzenal" ? eurPlano * 2.17 : eurPlano;
+                if (porMes < 1) return null;
+                // Retorno anualizado médio estimado por classe (histórico longo, MUITO
+                // aproximado — não é promessa). Ponderado pelos pesos da carteira.
+                const retClasse = { ETF: 0.07, Commodity: 0.04, Crypto: 0.15, Forex: 0.0, "Ação": 0.08 };
+                const somaP = (p.carteira || []).reduce((a, c) => a + (c.peso || 0), 0) || 100;
+                let retAnual = 0;
+                (p.carteira || []).forEach(c => { const a = ASSETS.find(x => x.id === c.id); if (a) retAnual += (retClasse[a.cat] ?? 0.05) * (c.peso / somaP); });
+                // Projeção de DCA: valor futuro de uma série de depósitos mensais.
+                const fv = (anos, taxaAnual) => {
+                  const r = taxaAnual / 12, n = anos * 12;
+                  if (r === 0) return porMes * n;
+                  return porMes * ((Math.pow(1 + r, n) - 1) / r);
+                };
+                const anos = [1, 5, 10];
+                const cenarios = [
+                  { nome: "Pessimista", taxa: retAnual * 0.4, cor: T.muted },
+                  { nome: "Médio", taxa: retAnual, cor: T.green },
+                  { nome: "Otimista", taxa: retAnual * 1.5, cor: T.accent },
+                ];
+                return (
+                  <div style={{ marginTop: 14, paddingTop: 14, borderTop: `1px solid ${T.border}` }}>
+                    <div style={{ fontSize: 11, fontWeight: 800, marginBottom: 8 }}>📈 Projeção (investindo ~€{Math.round(porMes)}/mês)</div>
+                    <div style={{ overflowX: "auto" }}>
+                      <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 10.5 }}>
+                        <thead>
+                          <tr style={{ color: T.muted }}>
+                            <th style={{ textAlign: "left", padding: "4px 8px", fontWeight: 600 }}>Cenário</th>
+                            {anos.map(y => <th key={y} style={{ textAlign: "right", padding: "4px 8px", fontWeight: 600 }}>{y} ano{y > 1 ? "s" : ""}</th>)}
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {cenarios.map(c => (
+                            <tr key={c.nome} style={{ borderTop: `1px solid ${T.border}` }}>
+                              <td style={{ padding: "6px 8px", fontWeight: 700, color: c.cor }}>{c.nome}<span style={{ fontSize: 8.5, color: T.muted, fontWeight: 400 }}> ({(c.taxa * 100).toFixed(0)}%/ano)</span></td>
+                              {anos.map(y => {
+                                const investido = porMes * 12 * y;
+                                const valor = fv(y, c.taxa);
+                                const ganho = valor - investido;
+                                return (
+                                  <td key={y} style={{ textAlign: "right", padding: "6px 8px" }}>
+                                    <div style={{ fontWeight: 700 }}>€{Math.round(valor).toLocaleString("pt-PT")}</div>
+                                    <div style={{ fontSize: 8.5, color: ganho >= 0 ? T.green : T.red }}>{ganho >= 0 ? "+" : ""}€{Math.round(ganho).toLocaleString("pt-PT")}</div>
+                                  </td>
+                                );
+                              })}
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                    <div style={{ fontSize: 8.5, color: T.gold, marginTop: 8, lineHeight: 1.5 }}>
+                      ⚠️ Estimativas MUITO aproximadas baseadas em médias históricas — não são promessas. Os mercados podem cair e perderes dinheiro. Rendimentos passados não garantem futuros. Não é aconselhamento financeiro.
+                    </div>
+                  </div>
+                );
+              })()}
             </Glass>
           );
         })}
@@ -3821,7 +4230,7 @@ JSON: {"signals":[{"id":"btc","sinal":"COMPRAR|VENDER|AGUARDAR","razao":"1 frase
           <div style={{ fontSize: 13, fontWeight: 700, marginBottom: 10 }}>➕ Criar novo plano</div>
           <DCAAssistente carteiraAtual={[]} onAplicar={(plano) => {
             novoPlano(plano.carteira, { tipo: "pct", valor: 0 }, plano.frequencia, plano.nome || "Novo plano");
-          }} callAI={callAI} ASSETS={ASSETS} T={T} Glass={Glass} />
+          }} callAI={callAI} ASSETS={ASSETS} T={T} Glass={Glass} brokersDisp={brokersDisp} />
           <button onClick={() => novoPlano([], { tipo: "pct", valor: 0 }, "mensal", "Plano manual")}
             style={{ marginTop: 10, padding: "8px 16px", borderRadius: 8, border: `1px solid ${T.border}`, background: "transparent", color: T.muted, fontSize: 11, cursor: "pointer" }}>
             ou criar plano vazio (configuro à mão)
@@ -3870,7 +4279,7 @@ JSON: {"signals":[{"id":"btc","sinal":"COMPRAR|VENDER|AGUARDAR","razao":"1 frase
   };
 
   // ── Assistente IA do DCA: perguntas simples → carteira sugerida ───────────
-  const DCAAssistente = ({ carteiraAtual, onAplicar, callAI, ASSETS, T, Glass }) => {
+  const DCAAssistente = ({ carteiraAtual, onAplicar, callAI, ASSETS, T, Glass, brokersDisp = [] }) => {
     const [aberto, setAberto] = useState(carteiraAtual.length === 0);
     const [objetivo, setObjetivo] = useState("ferias");
     const [horizonte, setHorizonte] = useState("2-5");
@@ -3892,8 +4301,16 @@ JSON: {"signals":[{"id":"btc","sinal":"COMPRAR|VENDER|AGUARDAR","razao":"1 frase
 
     const pedirSugestao = async () => {
       setLoading(true); setErro(null); setSugestao(null);
-      const universo = ASSETS.filter(a => ["ETF", "Commodity", "Crypto"].includes(a.cat))
-        .map(a => `${a.id} (${a.name}, ${a.cat})`).join(", ");
+      // Universo restrito ao que os brokers DISPONÍVEIS conseguem negociar. Assim
+      // a IA nunca sugere algo que não consegues comprar. XTB = ETF/ações/commodity;
+      // Binance = cripto. Se não houver info de brokers, usa o conjunto seguro (XTB).
+      const brokersAtivos = brokersDisp.length ? brokersDisp : [{ assetClasses: ["etf", "stock", "commodity"], nome: "XTB" }];
+      const classesOk = new Set();
+      brokersAtivos.forEach(b => (b.assetClasses || []).forEach(c => classesOk.add(c)));
+      const catParaClasseLocal = { Crypto: "crypto", ETF: "etf", "Ação": "stock", Commodity: "commodity", Forex: "forex" };
+      const universoAtivos = ASSETS.filter(a => classesOk.has(catParaClasseLocal[a.cat]));
+      const universo = universoAtivos.map(a => `${a.id} (${a.name}, ${a.cat})`).join(", ");
+      const nomesBrokers = brokersAtivos.map(b => b.nome).join(" + ");
       try {
         const { result } = await callAI({
           max_tokens: 900,
@@ -3904,15 +4321,20 @@ JSON: {"signals":[{"id":"btc","sinal":"COMPRAR|VENDER|AGUARDAR","razao":"1 frase
 - Horizonte: ${horizonte} anos
 - Tolerância a risco: ${perfil}
 - Investe €${valor} ${freq}
+- Brokers disponíveis: ${nomesBrokers}
 
-Ativos disponíveis (usa SÓ estes ids): ${universo}
+Ativos disponíveis (usa SÓ estes ids — são os que os brokers do utilizador conseguem comprar): ${universo}
 
-Sugere uma carteira diversificada e simples (3 a 5 ativos), adequada ao perfil e horizonte. Mais conservador = mais ETFs amplos e ouro, menos/nada de crypto. Mais arrojado = pode incluir uma fatia pequena de crypto. Os pesos têm de somar 100.
+Sugere uma carteira diversificada e simples (3 a 5 ativos), adequada ao perfil e horizonte. Mais conservador = mais ETFs amplos e ouro, menos/nada de crypto. Mais arrojado = pode incluir uma fatia pequena de crypto SE houver um broker de cripto disponível. NUNCA sugiras um ativo cujo id não esteja na lista acima. Os pesos têm de somar 100.
 
 Responde SÓ com este JSON:
 {"carteira":[{"id":"spy","peso":50},{"id":"gld","peso":30},{"id":"tlt","peso":20}],"explicacao":"frase curta em pt-PT a explicar a lógica","aviso":"1 frase a lembrar que não é aconselhamento e que há risco"}` }],
         });
         if (!result?.carteira?.length) throw new Error("Resposta sem carteira");
+        // Salvaguarda: filtra qualquer ativo que a IA tenha sugerido fora do universo.
+        const idsOk = new Set(universoAtivos.map(a => a.id));
+        result.carteira = result.carteira.filter(c => idsOk.has(c.id));
+        if (!result.carteira.length) throw new Error("A IA sugeriu ativos indisponíveis — tenta de novo");
         setSugestao(result);
       } catch (e) {
         setErro(e.message || "Falha ao contactar a IA");
@@ -5886,6 +6308,101 @@ pm2 save && pm2 startup`}</CodeBlock>
             padding: "10px 18px", fontSize: 12, color: T.red, cursor: "pointer", fontFamily: "inherit", fontWeight: 700,
           }}>🗑 Limpar Simulações</button>
           )}
+          {/* ── DCA: travão de emergência (desligar o núcleo passivo) ── */}
+          {!isSimTab && (() => {
+            const setDca = (v) => {
+              const novo = { ...currentSettings, dcaAtivo: v };
+              setCurrentSettings(novo);
+              if (user) import("./firebase.js").then(({ saveSetting }) => saveSetting(user.uid, docKey, novo).catch(() => {}));
+              toast(v ? "🎯 DCA religado — compras automáticas retomadas" : "⏸ DCA pausado — sem novas compras automáticas", v ? "success" : "warn");
+            };
+            const on = currentSettings.dcaAtivo !== false;
+            return (
+              <div style={{ marginTop: 8, padding: "16px 20px", borderRadius: 10, border: `1px solid ${on ? T.green + "33" : T.gold + "44"}`, background: on ? `${T.green}08` : `${T.gold}08` }}>
+                <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
+                  <span style={{ fontSize: 20 }}>🎯</span>
+                  <div style={{ flex: 1 }}>
+                    <div style={{ fontSize: 13, fontWeight: 800 }}>DCA (núcleo passivo)</div>
+                    <div style={{ fontSize: 10, color: T.muted, lineHeight: 1.5 }}>
+                      {on ? "Ligado — as compras automáticas dos teus planos correm normalmente." : "⏸ Pausado — nenhuma compra automática vai acontecer até religares. As posições atuais mantêm-se."}
+                    </div>
+                    <div style={{ fontSize: 9.5, color: T.gold, marginTop: 4 }}>Travão de emergência: usa-o se notares algo errado em live. Pausa só as compras novas, não vende nada.</div>
+                  </div>
+                  <div onClick={() => setDca(!on)} style={{ cursor: "pointer", flexShrink: 0 }}>
+                    <div style={{ width: 44, height: 24, borderRadius: 12, background: on ? T.green : "rgba(255,255,255,0.1)", position: "relative", transition: "all 0.2s" }}>
+                      <div style={{ position: "absolute", top: 3, left: on ? 22 : 2, width: 18, height: 18, borderRadius: "50%", background: "#fff", transition: "left 0.2s" }} />
+                    </div>
+                  </div>
+                </div>
+              </div>
+            );
+          })()}
+
+          {/* ── Trading Ativo: AI Brain (mestre) + fontes (opção C) ── */}
+          {!isSimTab && (() => {
+            const setFlag = (key, v) => {
+              const novo = { ...currentSettings, [key]: v };
+              setCurrentSettings(novo);
+              if (user) import("./firebase.js").then(({ saveSetting }) => saveSetting(user.uid, docKey, novo).catch(() => {}));
+            };
+            const mestre = !!currentSettings.aiBrainMestre;
+            const Toggle = ({ on, onClick, disabled, cor }) => (
+              <div onClick={() => !disabled && onClick()} style={{ cursor: disabled ? "not-allowed" : "pointer", flexShrink: 0, opacity: disabled ? 0.4 : 1 }}>
+                <div style={{ width: 44, height: 24, borderRadius: 12, background: on ? (cor || T.gold) : "rgba(255,255,255,0.1)", position: "relative", transition: "all 0.2s" }}>
+                  <div style={{ position: "absolute", top: 3, left: on ? 22 : 2, width: 18, height: 18, borderRadius: "50%", background: "#fff", transition: "left 0.2s" }} />
+                </div>
+              </div>
+            );
+            const fontes = [
+              { key: "aiEstrategias",    icon: "📊", nome: "Estratégias",       desc: "As tuas estratégias compram/vendem sozinhas, com os SL/TP do perfil." },
+              { key: "aiManualAutonomo", icon: "🤖", nome: "Compras autónomas",  desc: "O Cérebro AI decide e compra sozinho, nos sinais de alta confiança." },
+              { key: "aiDayTrading",     icon: "⚡", nome: "Day Trading",        desc: "Scalping rápido com IA, usando os SL/TP que definires abaixo." },
+            ];
+            return (
+              <div style={{ marginTop: 8, padding: "18px 20px", borderRadius: 10, border: `1px solid ${mestre ? T.gold + "44" : T.border}`, background: mestre ? `${T.gold}08` : "transparent" }}>
+                <div style={{ fontSize: 13, fontWeight: 800, marginBottom: 4 }}>⚡ Trading Ativo (opcional)</div>
+                <div style={{ fontSize: 10.5, color: T.muted, lineHeight: 1.6, marginBottom: 16 }}>
+                  O <b>AI Brain</b> é a chave-mestra: liga-o para desbloquear as fontes de trading ativo. Cada fonte corre em paralelo com o DCA, numa fatia separada do capital. Com o AI Brain desligado, só o DCA passivo funciona.
+                </div>
+
+                {/* Mestre */}
+                <div style={{ display: "flex", alignItems: "center", gap: 12, padding: "12px 14px", borderRadius: 8, background: `${T.gold}0c`, border: `1px solid ${T.gold}33`, marginBottom: 14 }}>
+                  <span style={{ fontSize: 20 }}>🧠</span>
+                  <div style={{ flex: 1 }}>
+                    <div style={{ fontSize: 12.5, fontWeight: 800 }}>AI Brain (mestre)</div>
+                    <div style={{ fontSize: 10, color: T.muted, lineHeight: 1.4 }}>Desbloqueia o trading ativo. Desligado = só DCA.</div>
+                  </div>
+                  <Toggle on={mestre} onClick={() => { const v = !mestre; setFlag("aiBrainMestre", v); toast(v ? "🧠 AI Brain ligado — fontes desbloqueadas" : "💤 AI Brain desligado — só DCA", v ? "info" : "success"); }} />
+                </div>
+
+                {/* Sub-fontes (só disponíveis com o mestre on) */}
+                <div style={{ display: "flex", flexDirection: "column", gap: 10, opacity: mestre ? 1 : 0.5 }}>
+                  {fontes.map(f => (
+                    <div key={f.key} style={{ display: "flex", alignItems: "center", gap: 12, padding: "10px 0", borderTop: `1px solid ${T.border}` }}>
+                      <span style={{ fontSize: 17 }}>{f.icon}</span>
+                      <div style={{ flex: 1 }}>
+                        <div style={{ fontSize: 12, fontWeight: 700 }}>{f.nome}</div>
+                        <div style={{ fontSize: 9.5, color: T.muted, lineHeight: 1.4 }}>{f.desc}</div>
+                      </div>
+                      <Toggle on={mestre && !!currentSettings[f.key]} disabled={!mestre} onClick={() => setFlag(f.key, !currentSettings[f.key])} />
+                    </div>
+                  ))}
+                  {/* Sugestão a pedido — independente, não executa nada */}
+                  <div style={{ display: "flex", alignItems: "center", gap: 12, padding: "10px 0", borderTop: `1px solid ${T.border}` }}>
+                    <span style={{ fontSize: 17 }}>💡</span>
+                    <div style={{ flex: 1 }}>
+                      <div style={{ fontSize: 12, fontWeight: 700 }}>Sugestão da IA a pedido</div>
+                      <div style={{ fontSize: 9.5, color: T.muted, lineHeight: 1.4 }}>A IA dá opinião quando TU pedes, antes de comprares. Não executa nada. Funciona mesmo sem o AI Brain.</div>
+                    </div>
+                    <Toggle on={!!currentSettings.aiManualSugestao} cor={T.blue} onClick={() => setFlag("aiManualSugestao", !currentSettings.aiManualSugestao)} />
+                  </div>
+                </div>
+                {!mestre && (
+                  <div style={{ fontSize: 9.5, color: T.muted, marginTop: 12, fontStyle: "italic" }}>Liga o AI Brain acima para poderes activar estas fontes.</div>
+                )}
+              </div>
+            );
+          })()}
           {/* ── Zona de perigo: recomeço de raiz (limpa a BD no servidor) ── */}
           {!isSimTab && (
             <div style={{ marginTop: 8, padding: "16px 18px", borderRadius: 10, border: `1px solid ${T.red}33`, background: `${T.red}08` }}>
@@ -6468,6 +6985,24 @@ JSON puro:
     return (
       <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
 
+        {/* ── Compras DCA pendentes — NO TOPO, bem visíveis (vêm do Telegram) ── */}
+        {manualOrders.length > 0 && (
+          <Glass glow style={{ padding: "18px 20px", background: `${T.gold}14`, border: `1.5px solid ${T.gold}` }}>
+            <div style={{ fontSize: 14, fontWeight: 800, marginBottom: 6 }}>🔔 {manualOrders.length} compra(s) à tua espera</div>
+            <div style={{ fontSize: 11, color: T.muted, lineHeight: 1.5, marginBottom: 12 }}>
+              Está na hora de investires nos teus planos DCA. Compra no teu broker e confirma aqui.
+            </div>
+            {manualOrders.slice(0, 3).map(o => (
+              <div key={o.id} style={{ fontSize: 11.5, marginBottom: 4 }}>
+                <b>{o.planNome}</b> — €{(o.valorTotal || 0).toFixed(2)}
+              </div>
+            ))}
+            <button onClick={() => setTab("dca")} style={{ width: "100%", marginTop: 10, padding: "12px", borderRadius: 10, border: "none", background: T.gold, color: "#000", fontWeight: 800, fontSize: 13, cursor: "pointer" }}>
+              Ver e confirmar →
+            </button>
+          </Glass>
+        )}
+
         {/* ── Cartão de estado principal ── */}
         <Glass glow style={{ padding: "22px 22px 20px", textAlign: "center" }}>
           <div style={{ fontSize: 11, color: T.muted, letterSpacing: "0.1em", textTransform: "uppercase", marginBottom: 6 }}>
@@ -6515,7 +7050,27 @@ JSON puro:
           )}
         </Glass>
 
-        {/* ── KPIs rápidos (2x2) ── */}
+        {/* ── DCA + ordens pendentes (foco do mobile) ── */}
+        {(() => {
+          const nPlanos = Array.isArray(liveSettings.dcaPlanos) ? liveSettings.dcaPlanos.length : 0;
+          const dcaOn = liveSettings.dcaAtivo !== false && nPlanos > 0;
+          return (
+            <Glass style={{ padding: "16px 18px", background: `${T.green}0a`, border: `1px solid ${T.green}33` }}>
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                <span style={{ fontSize: 13, fontWeight: 800 }}>🎯 DCA</span>
+                <span style={{ fontSize: 10, fontWeight: 700, color: dcaOn ? T.green : T.gold }}>{dcaOn ? "● Ativo" : nPlanos > 0 ? "Pausado" : "Sem planos"}</span>
+              </div>
+              <div style={{ fontSize: 10.5, color: T.muted, marginTop: 6, lineHeight: 1.5 }}>
+                {nPlanos > 0 ? `${nPlanos} plano(s) · €${liveSettings.dcaValorMensal || 0}/período` : "Cria o teu primeiro plano no separador DCA."}
+              </div>
+              {manualOrders.length > 0 && (
+                <div onClick={() => setTab("dca")} style={{ marginTop: 10, fontSize: 11, fontWeight: 700, color: T.gold, background: `${T.gold}15`, padding: "8px 12px", borderRadius: 8, textAlign: "center" }}>
+                  🔔 {manualOrders.length} compra(s) à tua espera — toca para confirmar
+                </div>
+              )}
+            </Glass>
+          );
+        })()}
         <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
           <Glass style={{ padding: "14px 16px" }}>
             <div style={{ fontSize: 9, color: T.muted, letterSpacing: "0.1em", textTransform: "uppercase", marginBottom: 4 }}>Disponível</div>
@@ -6622,6 +7177,7 @@ JSON puro:
     { id: "resumo",     icon: "⚡", label: "Resumo", mobileOnly: true },
     { id: "dashboard",  icon: "◈",  label: "Início"        },
     { id: "dca",        icon: "🎯", label: "Plano DCA"      },
+    { id: "relatorio",  icon: "📊", label: "Relatório"      },
     { id: "portfolio",  icon: "💼",  label: "Carteira"      },
     { id: "markets",    icon: "◎",  label: "Mercados"       },
     { id: "strategies", icon: "📊", label: "Estratégias",   aiFlag: "aiEstrategias" },
@@ -6634,9 +7190,10 @@ JSON puro:
     { id: "guide",      icon: "◉",  label: "Guia Setup"     },
   ];
   const aiTradeOn = !!liveSettings.aiTradeAtivo;
-  // Mostra cada separador de trading se a sua fonte (aiFlag) estiver ligada, OU se
-  // o toggle antigo aiTradeAtivo estiver on (retrocompatibilidade).
-  const NAV = NAV_ALL.filter(item => !item.aiFlag || aiTradeOn || liveSettings[item.aiFlag]);
+  const mestreOn = aiTradeOn || !!liveSettings.aiBrainMestre;
+  // Mostra cada separador de trading se o AI Brain (mestre) estiver ON e a sua
+  // fonte estiver ON. DCA/Carteira/etc. continuam sempre visíveis.
+  const NAV = NAV_ALL.filter(item => !item.aiFlag || (mestreOn && (aiTradeOn || liveSettings[item.aiFlag])));
 
   // ── Persistência Firestore: carregar estado ao iniciar ──────────────────
   useEffect(() => {
@@ -6702,8 +7259,11 @@ JSON puro:
       });
     }).catch(() => {});
     // Carregar estratégias guardadas
-    let unsubStrat = null, unsubSettings = null, unsubLive = null, unsubLiveLegacy = null, unsubReal = null, unsubCtrl = null, unsubArch = null, unsubDt = null, unsubBot = null, unsubSig = null, unsubDaily = null, unsubBrokers = null, unsubLogs = null, unsubPriceStats = null, unsubRegimeLog = null;
-    import("./firebase.js").then(({ subscribeStrategies, subscribeSetting: subSet, subscribeArchives, subscribeLogs, subscribeRegimeLog }) => {
+    let unsubStrat = null, unsubSettings = null, unsubLive = null, unsubLiveLegacy = null, unsubReal = null, unsubCtrl = null, unsubArch = null, unsubDt = null, unsubBot = null, unsubSig = null, unsubDaily = null, unsubBrokers = null, unsubLogs = null, unsubPriceStats = null, unsubRegimeLog = null, unsubManual = null;
+    import("./firebase.js").then(({ subscribeStrategies, subscribeSetting: subSet, subscribeArchives, subscribeLogs, subscribeRegimeLog, subscribeManualOrders }) => {
+      if (subscribeManualOrders) {
+        unsubManual = subscribeManualOrders(uid2, (ords) => setManualOrders(Array.isArray(ords) ? ords : []));
+      }
       if (subscribeArchives) {
         unsubDaily = subscribeArchives(uid2, (arcs) => {
           if (Array.isArray(arcs)) setDailyArchives(arcs);
@@ -6790,7 +7350,7 @@ JSON puro:
         if (val && typeof val === "object" && botActiveRef.current) setMarketSignals(val);
       });
     }).catch(() => {});
-    return () => { unsubTrades?.(); unsubBal?.(); unsubBalLive?.(); unsubTradeable?.(); unsubMktPrices?.(); unsubStrat?.(); unsubSettings?.(); unsubLive?.(); unsubLiveLegacy?.(); unsubReal?.(); unsubCtrl?.(); unsubArch?.(); unsubDt?.(); unsubBot?.(); unsubSig?.(); unsubDaily?.(); unsubBrokers?.(); unsubLogs?.(); unsubPriceStats?.(); unsubRegimeLog?.(); };
+    return () => { unsubTrades?.(); unsubBal?.(); unsubBalLive?.(); unsubTradeable?.(); unsubMktPrices?.(); unsubStrat?.(); unsubSettings?.(); unsubLive?.(); unsubLiveLegacy?.(); unsubReal?.(); unsubCtrl?.(); unsubArch?.(); unsubDt?.(); unsubBot?.(); unsubSig?.(); unsubDaily?.(); unsubBrokers?.(); unsubLogs?.(); unsubPriceStats?.(); unsubRegimeLog?.(); unsubManual?.(); };
   }, [user]);
 
   // ── Persistência: guardar trade quando aberto ─────────────────────────────
@@ -7010,6 +7570,7 @@ JSON puro:
             {tab === "resumo"     && MobileResumo()}
             {tab === "dashboard"  && Dashboard()}
             {tab === "dca"        && PlanoDCA()}
+            {tab === "relatorio"  && Relatorio()}
             {tab === "portfolio"  && Portfolio()}
             {tab === "markets"    && <Markets />}
             {tab === "strategies" && <Strategies />}
@@ -7037,6 +7598,7 @@ JSON puro:
             const active = tab === item.id;
             const badge = item.id === "strategies" ? strategies.filter(s => s.ativo).length
                         : item.id === "portfolio"  ? activePositions.length
+                        : item.id === "dca"         ? manualOrders.length
                         : 0;
             return (
               <div key={item.id} onClick={() => { setTab(item.id); window.scrollTo(0,0); }} style={{
@@ -7049,8 +7611,8 @@ JSON puro:
                 <span style={{ fontSize: 8.5, fontWeight: active ? 700 : 500, letterSpacing: "0.02em", whiteSpace: "nowrap" }}>{item.label}</span>
                 {active && <div style={{ position: "absolute", top: 0, width: 24, height: 2, background: T.accent, borderRadius: 2 }} />}
                 {badge > 0 && (
-                  <span style={{ position: "absolute", top: 2, right: 10, background: item.id==="portfolio"?T.green:T.accent,
-                    color: item.id==="portfolio"?"#000":"#fff", borderRadius: 99, minWidth: 14, height: 14,
+                  <span style={{ position: "absolute", top: 2, right: 10, background: item.id==="portfolio"?T.green:item.id==="dca"?T.gold:T.accent,
+                    color: item.id==="portfolio"||item.id==="dca"?"#000":"#fff", borderRadius: 99, minWidth: 14, height: 14,
                     display: "flex", alignItems: "center", justifyContent: "center", fontSize: 8, fontWeight: 700, padding: "0 3px" }}>
                     {badge}
                   </span>

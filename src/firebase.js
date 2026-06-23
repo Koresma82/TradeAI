@@ -162,6 +162,21 @@ export function subscribeSetting(uid, key, callback) {
   });
 }
 
+// Ouve as ordens DCA manuais pendentes (docs settings/dcaManual_*). Devolve a
+// lista das que ainda estão PENDENTE, para a app mostrar "compra isto e confirma".
+export function subscribeManualOrders(uid, callback) {
+  return onSnapshot(collection(db, "users", uid, "settings"), snap => {
+    const ordens = [];
+    snap.forEach(d => {
+      if (!d.id.startsWith("dcaManual_")) return;
+      const v = d.data().value;
+      if (v && v.estado === "PENDENTE") ordens.push(v);
+    });
+    ordens.sort((a, b) => (a.criadoEm || 0) - (b.criadoEm || 0));
+    callback(ordens);
+  });
+}
+
 // ── Stats ─────────────────────────────────────────────────────────────────────
 export async function saveStats(uid, stats) {
   const id = new Date().toISOString().split("T")[0];
