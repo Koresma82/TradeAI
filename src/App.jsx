@@ -661,6 +661,7 @@ export default function TradeAI() {
 
   const [positions, setPositions] = useState([]);
   const [manualOrders, setManualOrders] = useState([]); // ordens DCA manuais pendentes
+  const [dcaAportes, setDcaAportes] = useState({}); // contabilidade de aportes confirmados por plano
   const [closed, setClosed]       = useState([]);
   const [strategies, setStrategies] = useState([]);
   const [objective, setObjective]   = useState("");
@@ -817,11 +818,12 @@ export default function TradeAI() {
   // fonte, volta ao início (senão ficaria numa página agora escondida). Tem de
   // estar DEPOIS de liveSettings ser definido (senão dá erro de inicialização).
   useEffect(() => {
-    const flagDe = { strategies: "aiEstrategias", daytrading: "aiDayTrading", ai: "aiManualAutonomo" };
-    const flag = flagDe[tab];
+    // Sub-abas do Laboratório (trading ativo) só são acessíveis com o AI Brain
+    // mestre ligado. Se desligar o mestre estando lá, volta ao início.
+    const tabsLab = ["strategies", "daytrading", "ai"];
     const mestre = liveSettings.aiTradeAtivo || liveSettings.aiBrainMestre;
-    if (flag && !(mestre && (liveSettings.aiTradeAtivo || liveSettings[flag]))) setTab("dashboard");
-  }, [liveSettings.aiTradeAtivo, liveSettings.aiBrainMestre, liveSettings.aiEstrategias, liveSettings.aiDayTrading, liveSettings.aiManualAutonomo, tab]);
+    if (tabsLab.includes(tab) && !mestre) setTab("dashboard");
+  }, [liveSettings.aiTradeAtivo, liveSettings.aiBrainMestre, tab]);
   // Rótulo claro e único para qualquer modo do bot — evita mostrar "LIVE"
   // genérico que confunde paper com real. Usar em todo o lado.
   const modoLabelBot = (m) => m === "real" ? "DINHEIRO REAL" : m === "paper" ? "Paper" : m === "sim" ? "Simulação" : "—";
@@ -4060,6 +4062,79 @@ JSON: {"signals":[{"id":"btc","sinal":"COMPRAR|VENDER|AGUARDAR","razao":"1 frase
           </div>
           <div style={{ fontSize: 9.5, color: T.muted, marginTop: 14, lineHeight: 1.5 }}>Todos os valores de P&L já descontam as comissões estimadas de entrada e saída (round-trip), para refletirem o ganho/perda real.</div>
         </Glass>
+
+        {/* Exportação para IRS — CSV das vendas do ano (mais-valias) */}
+        <Glass style={{ padding: "20px 24px" }}>
+          <div style={{ fontSize: 14, fontWeight: 800, marginBottom: 6 }}>📄 Exportar para IRS</div>
+          <div style={{ fontSize: 10.5, color: T.muted, lineHeight: 1.6, marginBottom: 14 }}>
+            Gera um ficheiro CSV com as tuas vendas do ano (data, ativo, valor de compra, valor de venda, mais/menos-valia). Útil para o Anexo G/J do IRS quando venderes. Abre no Excel.
+          </div>
+          <Btn solid color={T.accent} onClick={() => {
+            const ano = new Date().getFullYear();
+            const vendas = closed.filter(t => {
+              if (!t.status || t.status === "ABERTA") return false;
+              const d = t.closedAt || t.savedAt;
+              return d && new Date(d).getFullYear() === ano;
+            });
+            if (!vendas.length) { toast("Sem vendas registadas este ano para exportar.", "warn"); return; }
+            const linhas = [["Data venda", "Ativo", "Unidades", "Valor compra (EUR)", "Valor venda (EUR)", "Mais-valia (EUR)"]];
+            vendas.forEach(t => {
+              const px = t.exitPrice ?? t.precoSaida ?? 0;
+              const valorVenda = px * t.units;
+              const valorCompra = t.entryPrice * t.units;
+              const mv = valorVenda - valorCompra - roundTripFeeApp(t, t.amount);
+              linhas.push([
+                new Date(t.closedAt || t.savedAt).toLocaleDateString("pt-PT"),
+                (t.assetSym || t.assetId || "").toUpperCase(),
+                t.units.toFixed(6),
+                valorCompra.toFixed(2),
+                valorVenda.toFixed(2),
+                mv.toFixed(2),
+              ]);
+            });
+            const csv = linhas.map(l => l.join(";")).join("\n");
+            const blob = new Blob(["\ufeff" + csv], { type: "text/csv;charset=utf-8;" });
+            const url = URL.createObjectURL(blob);
+            const a = document.createElement("a");
+            a.href = url; a.download = `tradeai-irs-${ano}.csv`; a.click();
+            URL.revokeObjectURL(url);
+            toast(`✅ Exportadas ${vendas.length} vendas de ${ano}`, "success");
+          }}>📥 Exportar vendas de {new Date().getFullYear()}</Btn>
+          <div style={{ fontSize: 9, color: T.muted, marginTop: 10, lineHeight: 1.5 }}>⚠️ Documento de apoio, não substitui aconselhamento fiscal. Confirma as regras de mais-valias com um contabilista ou na app das Finanças.</div>
+        </Glass>
+
+        {/* Comparação: trading ativo vs comprar-e-segurar (honestidade sobre a estratégia) */}
+        {fontes.length > 0 && (() => {
+          // Quanto renderia se, em vez de fazer trading ativo, simplesmente
+          // tivesses comprado os mesmos ativos e segurado (sem comissões de saída).
+          const investidoAtivo = fontes.reduce((a, x) => a + x.investido, 0);
+          // P&L de buy-and-hold = variação de preço desde a entrada, SEM custos de
+          // rotação (só uma entrada). Aproximação: o valor atual menos o investido.
+          const valorBH = ativo.reduce((a, p) => { const px = precoDe(p.assetId); return a + (px != null ? p.units * px : (p.amount || 0)); }, 0);
+          const plBH = valorBH - investidoAtivo; // sem taxas de saída repetidas
+          const plReal = totalAtivoPL; // já líquido de taxas
+          const diff = plReal - plBH;
+          return (
+            <Glass style={{ padding: "20px 24px" }}>
+              <div style={{ fontSize: 14, fontWeight: 800, marginBottom: 6 }}>⚖️ Trading ativo vs Comprar e segurar</div>
+              <div style={{ fontSize: 10.5, color: T.muted, lineHeight: 1.6, marginBottom: 14 }}>
+                Compara o que ganhaste a fazer trading ativo com o que terias ganho se simplesmente comprasses os mesmos ativos e segurasses. Ajuda a saber se a estratégia ativa está mesmo a valer a pena.
+              </div>
+              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 14 }}>
+                <div><div style={{ fontSize: 10, color: T.muted, textTransform: "uppercase" }}>Trading ativo (real)</div><div style={{ fontSize: 17, fontWeight: 800, color: plReal >= 0 ? T.green : T.red }}>{plReal >= 0 ? "+" : ""}{fmt(plReal)}</div></div>
+                <div><div style={{ fontSize: 10, color: T.muted, textTransform: "uppercase" }}>Se tivesses só segurado</div><div style={{ fontSize: 17, fontWeight: 800, color: plBH >= 0 ? T.green : T.red }}>{plBH >= 0 ? "+" : ""}{fmt(plBH)}</div></div>
+              </div>
+              <div style={{ marginTop: 14, padding: "12px 16px", borderRadius: 10, background: diff >= 0 ? `${T.green}12` : `${T.red}12`, border: `1px solid ${diff >= 0 ? T.green : T.red}33` }}>
+                <div style={{ fontSize: 12, fontWeight: 700, color: diff >= 0 ? T.green : T.red }}>
+                  {diff >= 0
+                    ? `✓ O trading ativo está a render +${fmt(diff)} acima de comprar e segurar.`
+                    : `⚠ Comprar e segurar teria rendido +${fmt(Math.abs(diff))} a mais que o trading ativo.`}
+                </div>
+                {diff < 0 && <div style={{ fontSize: 9.5, color: T.muted, marginTop: 4 }}>Não é um problema imediato — é só informação. Se isto se mantiver ao longo do tempo, talvez o DCA passivo seja melhor para ti do que o trading ativo.</div>}
+              </div>
+            </Glass>
+          );
+        })()}
       </div>
     );
   };
@@ -4160,6 +4235,46 @@ JSON: {"signals":[{"id":"btc","sinal":"COMPRAR|VENDER|AGUARDAR","razao":"1 frase
             }} />
         ))}
 
+        {/* Calendário de próximos aportes — quando é a próxima compra de cada plano */}
+        {planos.length > 0 && (() => {
+          const FREQ_MS = { semanal: 7*864e5, quinzenal: 15*864e5, mensal: 30*864e5 };
+          const agora = Date.now();
+          const proximos = planos.map(p => {
+            let prox = p.proximaCompra;
+            if (!prox) {
+              const intervalo = FREQ_MS[p.frequencia] || FREQ_MS.mensal;
+              prox = (p.dataInicio || agora) + intervalo;
+            }
+            const eur = planosEur[p.id] || 0;
+            return { nome: p.nome, prox, eur, modo: p.modoExecucao, freq: p.frequencia };
+          }).filter(x => x.eur > 0).sort((a, b) => a.prox - b.prox);
+          if (!proximos.length) return null;
+          return (
+            <Glass style={{ padding: "20px 24px" }}>
+              <div style={{ fontSize: 14, fontWeight: 800, marginBottom: 14 }}>📅 Próximos aportes</div>
+              <div style={{ display: "flex", flexDirection: "column", gap: 0 }}>
+                {proximos.map((x, i) => {
+                  const dias = Math.ceil((x.prox - agora) / 864e5);
+                  const quando = dias <= 0 ? "hoje" : dias === 1 ? "amanhã" : `em ${dias} dias`;
+                  return (
+                    <div key={i} style={{ display: "flex", alignItems: "center", gap: 12, padding: "11px 0", borderTop: i ? `1px solid ${T.border}` : "none" }}>
+                      <div style={{ width: 42, height: 42, borderRadius: 10, background: T.gradCard, display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", flexShrink: 0 }}>
+                        <div style={{ fontSize: 14, fontWeight: 800, lineHeight: 1 }}>{new Date(x.prox).getDate()}</div>
+                        <div style={{ fontSize: 7.5, color: T.muted, textTransform: "uppercase" }}>{new Date(x.prox).toLocaleString("pt-PT", { month: "short" })}</div>
+                      </div>
+                      <div style={{ flex: 1 }}>
+                        <div style={{ fontSize: 12.5, fontWeight: 700 }}>{x.nome}</div>
+                        <div style={{ fontSize: 9.5, color: T.muted }}>€{x.eur.toFixed(0)} · {x.freq} · {x.modo === "manual" ? "🔔 confirmas tu" : "🤖 automático"}</div>
+                      </div>
+                      <div style={{ fontSize: 11, fontWeight: 700, color: dias <= 1 ? T.gold : T.muted }}>{quando}</div>
+                    </div>
+                  );
+                })}
+              </div>
+            </Glass>
+          );
+        })()}
+
         {/* Bolo mensal + repartição */}
         <Glass style={{ padding: "20px 24px" }}>
           <div style={{ fontSize: 14, fontWeight: 800, marginBottom: 14 }}>💰 Valor mensal e repartição</div>
@@ -4224,6 +4339,57 @@ JSON: {"signals":[{"id":"btc","sinal":"COMPRAR|VENDER|AGUARDAR","razao":"1 frase
                 <button onClick={() => delPlano(p.id)} style={{ border: "none", background: "none", color: T.red, cursor: "pointer", fontSize: 18 }}>×</button>
               </div>
 
+              {/* Contabilidade de aportes (planos manuais com lembretes) */}
+              {p.modoExecucao === "manual" && liveSettings.dcaLembretes && (() => {
+                const valorPlano = planosEur[p.id] || 0;
+                if (valorPlano < 1) return null;
+                const FREQ_MS = { semanal: 7*864e5, quinzenal: 15*864e5, mensal: 30*864e5 };
+                const inicio = p.dataInicio || Date.now();
+                const intervalo = FREQ_MS[p.frequencia] || FREQ_MS.mensal;
+                const periodosDecorridos = Math.max(1, Math.floor((Date.now() - inicio) / intervalo) + 1);
+                const devido = periodosDecorridos * valorPlano;
+                const reg = dcaAportes[p.id] || { total: 0, periodos: 0 };
+                const investido = reg.total || 0;
+                const emFalta = +(devido - investido).toFixed(2);
+                const periodosFalta = valorPlano > 0 ? Math.max(0, Math.round(emFalta / valorPlano)) : 0;
+                const emDia = emFalta <= 0.5;
+                return (
+                  <div style={{ marginBottom: 14, padding: "14px 16px", borderRadius: 12, background: emDia ? `${T.green}0c` : `${T.gold}0c`, border: `1px solid ${emDia ? T.green : T.gold}33` }}>
+                    <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 10 }}>
+                      <span style={{ fontSize: 12, fontWeight: 800 }}>{emDia ? "✅ Em dia" : `⚠️ ${periodosFalta} aporte(s) em atraso`}</span>
+                      <span style={{ fontSize: 11, fontWeight: 700, color: emDia ? T.green : T.gold }}>{emDia ? "Tudo certo!" : `€${emFalta.toFixed(0)} em falta`}</span>
+                    </div>
+                    <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10, fontSize: 10 }}>
+                      <div><span style={{ color: T.muted }}>Devias ter investido</span><div style={{ fontSize: 13, fontWeight: 700 }}>€{devido.toFixed(0)}</div></div>
+                      <div><span style={{ color: T.muted }}>Já investiste</span><div style={{ fontSize: 13, fontWeight: 700 }}>€{investido.toFixed(0)}</div></div>
+                    </div>
+                    {!emDia && (
+                      <button onClick={() => {
+                        if (!user) return;
+                        // Cria uma ordem manual para o valor em falta (até 1 período de cada vez, ou tudo).
+                        const itens = (p.carteira || []).filter(c => c.peso > 0).map(c => {
+                          const somaP = (p.carteira || []).reduce((a, x) => a + x.peso, 0) || 100;
+                          const eur = +(emFalta * (c.peso / somaP)).toFixed(2);
+                          const a = assets.find(x => x.id === c.id);
+                          return { assetId: c.id, eur, preco: a?.price || 0 };
+                        }).filter(i => i.eur >= 1 && i.preco > 0);
+                        if (!itens.length) { toast("Sem preços para registar agora.", "warn"); return; }
+                        import("./firebase.js").then(({ sendCommand }) => {
+                          sendCommand(user.uid, { type: "DCA_MANUAL_CONFIRM", planId: p.id, planNome: p.nome, broker: p.brokerId, itens })
+                            .then(() => toast(`✅ Registado €${emFalta.toFixed(0)} — compensaste o atraso`, "success"))
+                            .catch(() => toast("Erro ao registar.", "error"));
+                        });
+                      }} style={{ width: "100%", marginTop: 12, padding: "10px", borderRadius: 9, border: "none", background: T.gradGold, color: "#000", fontWeight: 800, fontSize: 12, cursor: "pointer" }}>
+                        💰 Já investi €{emFalta.toFixed(0)} — compensar atraso
+                      </button>
+                    )}
+                    <div style={{ fontSize: 8.5, color: T.muted, marginTop: 8, lineHeight: 1.5 }}>
+                      Se puseres mais num período, abate ao atraso automaticamente. Compensas quando quiseres — neste mês, no próximo, ou de uma vez.
+                    </div>
+                  </div>
+                );
+              })()}
+
               {diasAtivo != null && (
                 <div style={{ fontSize: 9.5, color: T.muted, marginBottom: 10 }}>📅 Início: {new Date(p.dataInicio).toLocaleDateString("pt-PT")} ({diasAtivo} dias) — desempenho mede-se a partir daqui</div>
               )}
@@ -4274,6 +4440,22 @@ JSON: {"signals":[{"id":"btc","sinal":"COMPRAR|VENDER|AGUARDAR","razao":"1 frase
                       style={{ padding: "4px 8px", borderRadius: 6, border: `1px solid ${T.border}`, background: "rgba(0,0,0,0.3)", color: T.aLight, fontSize: 10 }}>
                       {bp.compat.map(b => <option key={b.id} value={b.id}>{b.nome}</option>)}
                     </select>
+                  </div>
+                );
+              })()}
+
+              {/* Otimizador de taxas: avisa se há ETFs em USD num plano no XTB
+                  (custam 0,5% de câmbio) e sugere versões UCITS em EUR. */}
+              {(() => {
+                const bp = brokerDoPlano(p.carteira);
+                const usaXtb = bp?.compat?.some(b => b.id === "xtb") || (p.brokerId === "xtb");
+                if (!usaXtb || !p.carteira?.length) return null;
+                // Ativos que cotam em USD (ETFs US + commodities) → têm custo de câmbio.
+                const emUSD = p.carteira.filter(c => { const a = ASSETS.find(x => x.id === c.id); return a && (a.cat === "ETF" || a.cat === "Commodity"); });
+                if (!emUSD.length) return null;
+                return (
+                  <div style={{ fontSize: 9.5, color: T.gold, marginBottom: 12, background: `${T.gold}10`, padding: "8px 12px", borderRadius: 8, lineHeight: 1.5 }}>
+                    💱 <b>Dica de poupança:</b> {emUSD.length} ativo(s) deste plano cotam em USD — no XTB pagas ~0,5% de câmbio por compra. Se escolheres versões UCITS em EUR (ex.: VWCE, VUAA), poupas esse custo. Em anos de DCA, faz diferença.
                   </div>
                 );
               })()}
@@ -4362,6 +4544,31 @@ JSON: {"signals":[{"id":"btc","sinal":"COMPRAR|VENDER|AGUARDAR","razao":"1 frase
                 ];
                 return (
                   <div style={{ marginTop: 14, paddingTop: 14, borderTop: `1px solid ${T.border}` }}>
+                    {/* Real vs projetado: como o plano vai face ao esperado */}
+                    {investidoPlano > 0 && (() => {
+                      // Valor real atual do plano
+                      const valorReal = positions.filter(x => (x.status === "ABERTA" || !x.status) && x.stratId === "dca" && (x.planId || "principal") === p.id)
+                        .reduce((a, x) => { const px = assets.find(z => z.id === x.assetId); return a + (px ? x.units * px.price : (x.amount || 0)); }, 0);
+                      // Esperado: ao retorno médio anualizado, sobre o tempo decorrido
+                      const dias = p.dataInicio ? Math.max(1, (Date.now() - p.dataInicio) / 864e5) : 30;
+                      const anos = dias / 365;
+                      const esperado = investidoPlano * Math.pow(1 + retAnual, anos);
+                      const diff = valorReal - esperado;
+                      const pctDiff = esperado > 0 ? (diff / esperado) * 100 : 0;
+                      if (Math.abs(pctDiff) < 0.5) return null;
+                      return (
+                        <div style={{ marginBottom: 12, padding: "10px 14px", borderRadius: 8, background: diff >= 0 ? `${T.green}10` : `${T.gold}10`, border: `1px solid ${diff >= 0 ? T.green : T.gold}33` }}>
+                          <div style={{ fontSize: 11, fontWeight: 700, color: diff >= 0 ? T.green : T.gold }}>
+                            {diff >= 0
+                              ? `📈 Está ${pctDiff.toFixed(1)}% à frente do projetado`
+                              : `📉 Está ${Math.abs(pctDiff).toFixed(1)}% atrás do projetado`}
+                          </div>
+                          <div style={{ fontSize: 9, color: T.muted, marginTop: 3 }}>
+                            Real: €{Math.round(valorReal)} · Esperado a esta altura: €{Math.round(esperado)}. {diff < 0 ? "Normal no curto prazo — o DCA recupera com o tempo." : "Boa! Mas não te habitues; os mercados oscilam."}
+                          </div>
+                        </div>
+                      );
+                    })()}
                     <div style={{ fontSize: 11, fontWeight: 800, marginBottom: 8 }}>📈 Projeção (investindo ~€{Math.round(porMes)}/mês)</div>
                     <div style={{ overflowX: "auto" }}>
                       <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 10.5 }}>
@@ -6370,6 +6577,90 @@ pm2 save && pm2 startup`}</CodeBlock>
             );
           })()}
 
+          {/* ── Notificações DCA (opt-in): alerta de queda + resumo mensal ── */}
+          {!isSimTab && (() => {
+            const setFlag = (key, v) => {
+              const novo = { ...currentSettings, [key]: v };
+              setCurrentSettings(novo);
+              if (user) import("./firebase.js").then(({ saveSetting }) => saveSetting(user.uid, docKey, novo).catch(() => {}));
+            };
+            const Toggle = ({ on, onClick }) => (
+              <div onClick={onClick} style={{ cursor: "pointer", flexShrink: 0 }}>
+                <div style={{ width: 44, height: 24, borderRadius: 12, background: on ? T.green : "rgba(255,255,255,0.1)", position: "relative", transition: "all 0.2s" }}>
+                  <div style={{ position: "absolute", top: 3, left: on ? 22 : 2, width: 18, height: 18, borderRadius: "50%", background: "#fff", transition: "left 0.2s" }} />
+                </div>
+              </div>
+            );
+            const queda = !!currentSettings.dcaAlertaQueda;
+            const resumo = !!currentSettings.dcaResumoMensal;
+            return (
+              <div style={{ marginTop: 8, padding: "16px 20px", borderRadius: 10, border: `1px solid ${T.border}`, background: T.card }}>
+                <div style={{ fontSize: 12, fontWeight: 800, marginBottom: 12 }}>🔔 Notificações DCA (Telegram)</div>
+                <div style={{ display: "flex", alignItems: "center", gap: 12, marginBottom: 14 }}>
+                  <span style={{ fontSize: 18 }}>📉</span>
+                  <div style={{ flex: 1 }}>
+                    <div style={{ fontSize: 12, fontWeight: 700 }}>Alerta de compra em queda</div>
+                    <div style={{ fontSize: 9.5, color: T.muted, lineHeight: 1.5 }}>Avisa-te quando um ativo cai bastante abaixo do teu preço médio — oportunidade para reforçares.</div>
+                  </div>
+                  <Toggle on={queda} onClick={() => setFlag("dcaAlertaQueda", !queda)} />
+                </div>
+                <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
+                  <span style={{ fontSize: 18 }}>📅</span>
+                  <div style={{ flex: 1 }}>
+                    <div style={{ fontSize: 12, fontWeight: 700 }}>Resumo mensal</div>
+                    <div style={{ fontSize: 9.5, color: T.muted, lineHeight: 1.5 }}>No início de cada mês, recebes um balanço dos teus planos: investido, valor atual e P&L.</div>
+                  </div>
+                  <Toggle on={resumo} onClick={() => setFlag("dcaResumoMensal", !resumo)} />
+                </div>
+                <div style={{ display: "flex", alignItems: "center", gap: 12, marginTop: 14, paddingTop: 14, borderTop: `1px solid ${T.border}` }}>
+                  <span style={{ fontSize: 18 }}>⏰</span>
+                  <div style={{ flex: 1 }}>
+                    <div style={{ fontSize: 12, fontWeight: 700 }}>Lembrete diário de aporte</div>
+                    <div style={{ fontSize: 9.5, color: T.muted, lineHeight: 1.5 }}>Para planos manuais: lembra-te todos os dias de investir, até confirmares na app. A app conta o que está em atraso.</div>
+                  </div>
+                  <Toggle on={!!currentSettings.dcaLembretes} onClick={() => setFlag("dcaLembretes", !currentSettings.dcaLembretes)} />
+                </div>
+              </div>
+            );
+          })()}
+
+          {/* ── Modo férias: pausa o DCA até uma data, retoma sozinho ── */}
+          {!isSimTab && (() => {
+            const setVal = (v) => {
+              const novo = { ...currentSettings, dcaPausadoAte: v };
+              setCurrentSettings(novo);
+              if (user) import("./firebase.js").then(({ saveSetting }) => saveSetting(user.uid, docKey, novo).catch(() => {}));
+            };
+            const pausadoAte = currentSettings.dcaPausadoAte;
+            const ativo = pausadoAte && Number(pausadoAte) > Date.now();
+            return (
+              <div style={{ marginTop: 8, padding: "16px 20px", borderRadius: 10, border: `1px solid ${ativo ? T.gold + "44" : T.border}`, background: ativo ? `${T.gold}08` : T.card }}>
+                <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
+                  <span style={{ fontSize: 18 }}>🏖️</span>
+                  <div style={{ flex: 1 }}>
+                    <div style={{ fontSize: 12, fontWeight: 800 }}>Modo férias</div>
+                    <div style={{ fontSize: 9.5, color: T.muted, lineHeight: 1.5 }}>
+                      {ativo
+                        ? `DCA pausado até ${new Date(Number(pausadoAte)).toLocaleDateString("pt-PT")}. Retoma sozinho nessa data.`
+                        : "Pausa as compras DCA até uma data (ex.: meses sem rendimento). Retoma automaticamente."}
+                    </div>
+                  </div>
+                </div>
+                <div style={{ display: "flex", gap: 8, marginTop: 12, alignItems: "center", flexWrap: "wrap" }}>
+                  <input type="date" min={new Date(Date.now() + 864e5).toISOString().split("T")[0]}
+                    value={ativo ? new Date(Number(pausadoAte)).toISOString().split("T")[0] : ""}
+                    onChange={(e) => { if (e.target.value) setVal(new Date(e.target.value).getTime()); }}
+                    style={{ padding: "8px 10px", borderRadius: 8, border: `1px solid ${T.border}`, background: "rgba(0,0,0,0.3)", color: T.aLight, fontSize: 12, fontFamily: "inherit" }} />
+                  {ativo && (
+                    <button onClick={() => setVal(null)} style={{ padding: "8px 14px", borderRadius: 8, border: `1px solid ${T.green}44`, background: `${T.green}15`, color: T.green, fontSize: 11, fontWeight: 700, cursor: "pointer" }}>
+                      Retomar agora
+                    </button>
+                  )}
+                </div>
+              </div>
+            );
+          })()}
+
           {/* ── Trading Ativo: AI Brain (mestre) + fontes (opção C) ── */}
           {!isSimTab && (() => {
             const setFlag = (key, v) => {
@@ -7041,7 +7332,11 @@ JSON puro:
           <div style={{ fontSize: 11, color: T.muted, letterSpacing: "0.1em", textTransform: "uppercase", marginBottom: 6 }}>
             {aGanhar ? "Estás a ganhar" : "Estás a perder"}
           </div>
-          <div style={{ fontSize: 40, fontWeight: 800, color: corPnl, lineHeight: 1.1, letterSpacing: "-0.02em" }}>
+          <div style={{
+            fontSize: 44, fontWeight: 800, lineHeight: 1.1, letterSpacing: "-0.02em",
+            background: aGanhar ? T.gradGreen : `linear-gradient(135deg, ${T.red}, #ff8fa3)`,
+            WebkitBackgroundClip: "text", WebkitTextFillColor: "transparent", backgroundClip: "text",
+          }}>
             {sign(ganhoHoje)}{eur(ganhoHoje)}
           </div>
           <div style={{ fontSize: 12, color: T.muted, marginTop: 6 }}>
@@ -7399,6 +7694,9 @@ JSON puro:
       unsubBrokers = subSet(uid2, "brokerBalances", (val) => {
         // { alpaca: 123.45, binance: 67.89, ... } — escrito pelo bot em paper/live
         if (val && typeof val === "object") setBrokerBalances(val);
+      });
+      subSet(uid2, "dcaAportes", (val) => {
+        if (val && typeof val === "object") setDcaAportes(val);
       });
       unsubSig = subSet(uid2, "marketSignals", (val) => {
         // Só usar os sinais do bot quando ele está ativo (senão a app gera os seus)
