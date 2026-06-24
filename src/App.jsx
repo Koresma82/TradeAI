@@ -61,18 +61,28 @@ async function callGroq({ messages, system, max_tokens = 1500, temperature = 0.3
 
 // ─── TOKENS ──────────────────────────────────────────────────────────────────
 const T = {
-  bg:    "#06061a",
-  base:  "#0b0b22",
-  card:  "rgba(255,255,255,0.045)",
-  border:"rgba(255,255,255,0.08)",
-  accent:"#6366f1",
-  aLight:"#a5b4fc",
-  green: "#10b981",
-  red:   "#f43f5e",
-  gold:  "#f59e0b",
+  bg:    "#07071c",
+  base:  "#0d0d28",
+  card:  "rgba(255,255,255,0.05)",
+  cardHi:"rgba(255,255,255,0.08)",
+  border:"rgba(255,255,255,0.09)",
+  accent:"#7c7aff",
+  aLight:"#b4bcff",
+  green: "#10d98a",
+  red:   "#fb5a78",
+  gold:  "#fbbf24",
   blue:  "#3b82f6",
-  text:  "#e2e8f0",
-  muted: "#6b7280",
+  cyan:  "#22d3ee",
+  purple:"#a855f7",
+  pink:  "#ec4899",
+  text:  "#e8ecf8",
+  muted: "#7a8195",
+  // Gradientes para um visual mais vibrante e dinâmico
+  gradAccent: "linear-gradient(135deg, #7c7aff 0%, #a855f7 100%)",
+  gradGreen:  "linear-gradient(135deg, #10d98a 0%, #22d3ee 100%)",
+  gradGold:   "linear-gradient(135deg, #fbbf24 0%, #fb923c 100%)",
+  gradCard:   "linear-gradient(160deg, rgba(124,122,255,0.08) 0%, rgba(168,85,247,0.03) 100%)",
+  glow:       "0 0 40px rgba(124,122,255,0.15)",
 };
 
 // ─── MARKET HOURS ────────────────────────────────────────────────────────────
@@ -194,13 +204,14 @@ const genH  = (base, n = 64) => {
 function Glass({ children, style = {}, glow, onClick }) {
   return (
     <div onClick={onClick} style={{
-      background: T.card,
-      border: `1px solid ${glow ? T.accent + "55" : T.border}`,
-      borderRadius: 16,
-      backdropFilter: "blur(16px)",
+      background: glow ? T.gradCard : T.card,
+      border: `1px solid ${glow ? T.accent + "44" : T.border}`,
+      borderRadius: 18,
+      backdropFilter: "blur(18px)",
       boxShadow: glow
-        ? `0 0 32px rgba(99,102,241,0.14), inset 0 1px 0 rgba(255,255,255,0.06)`
-        : `inset 0 1px 0 rgba(255,255,255,0.04)`,
+        ? `0 8px 32px rgba(124,122,255,0.16), inset 0 1px 0 rgba(255,255,255,0.07)`
+        : `0 4px 20px rgba(0,0,0,0.18), inset 0 1px 0 rgba(255,255,255,0.045)`,
+      transition: "transform 0.18s ease, box-shadow 0.18s ease",
       ...style,
     }}>{children}</div>
   );
@@ -247,17 +258,20 @@ function KPI({ label, value, sub, color = T.text, xl }) {
 }
 
 function Btn({ children, onClick, color = T.accent, solid, sm, disabled, full, style = {} }) {
+  // Botões sólidos accent/green/gold ganham gradiente para um look mais vibrante.
+  const grad = solid && (color === T.accent ? T.gradAccent : color === T.green ? T.gradGreen : color === T.gold ? T.gradGold : null);
   return (
     <button onClick={onClick} disabled={disabled} style={{
-      background: solid ? color : `${color}15`,
+      background: grad || (solid ? color : `${color}15`),
       color: solid ? "#fff" : color,
-      border: `1px solid ${solid ? color + "aa" : color + "44"}`,
-      borderRadius: sm ? 8 : 10,
-      padding: sm ? "5px 12px" : "10px 20px",
-      fontSize: sm ? 11 : 12, fontWeight: 700,
+      border: `1px solid ${solid ? "transparent" : color + "44"}`,
+      borderRadius: sm ? 9 : 11,
+      padding: sm ? "6px 13px" : "11px 22px",
+      fontSize: sm ? 11 : 12.5, fontWeight: 700,
       cursor: disabled ? "not-allowed" : "pointer",
       fontFamily: "inherit", opacity: disabled ? 0.45 : 1,
-      transition: "all 0.14s", letterSpacing: "0.05em",
+      transition: "all 0.16s", letterSpacing: "0.04em",
+      boxShadow: solid && !disabled ? `0 4px 16px ${color}44` : "none",
       width: full ? "100%" : "auto", ...style,
     }}>{children}</button>
   );
@@ -395,13 +409,21 @@ Responde SÓ com este JSON:
             <div style={{ display: "flex", flexDirection: "column", gap: 6, marginBottom: 12 }}>
               {sugestao.carteira.map(c => {
                 const a = ASSETS.find(x => x.id === c.id);
+                const eur = +((Number(valor) || 0) * (c.peso / 100)).toFixed(2);
                 return (
-                  <div key={c.id} style={{ display: "flex", justifyContent: "space-between", fontSize: 12 }}>
+                  <div key={c.id} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", fontSize: 12 }}>
                     <span>{a ? `${a.icon || ""} ${a.name}` : c.id}</span>
-                    <span style={{ fontWeight: 700, color: T.green }}>{c.peso}%</span>
+                    <span style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                      <span style={{ fontWeight: 700, color: T.aLight }}>€{eur}</span>
+                      <span style={{ fontSize: 10, color: T.muted, minWidth: 32, textAlign: "right" }}>{c.peso}%</span>
+                    </span>
                   </div>
                 );
               })}
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", fontSize: 11, paddingTop: 8, marginTop: 2, borderTop: `1px solid ${T.border}` }}>
+                <span style={{ color: T.muted }}>Total por compra ({freq})</span>
+                <span style={{ fontWeight: 800, color: T.green }}>€{(Number(valor) || 0).toFixed(2)}</span>
+              </div>
             </div>
             {sugestao.explicacao && <div style={{ fontSize: 11, color: T.muted, lineHeight: 1.6, marginBottom: 8 }}>{sugestao.explicacao}</div>}
             {sugestao.aviso && <div style={{ fontSize: 10, color: T.gold, lineHeight: 1.5, marginBottom: 12 }}>⚠️ {sugestao.aviso}</div>}
@@ -7186,25 +7208,47 @@ JSON puro:
   // desligado (só DCA), ficam escondidos para o layout respirar e não confundir.
   const NAV_ALL = [
     { id: "resumo",     icon: "⚡", label: "Resumo", mobileOnly: true },
-    { id: "dashboard",  icon: "◈",  label: "Início"        },
-    { id: "dca",        icon: "🎯", label: "Plano DCA"      },
-    { id: "relatorio",  icon: "📊", label: "Relatório"      },
-    { id: "portfolio",  icon: "💼",  label: "Carteira"      },
-    { id: "markets",    icon: "◎",  label: "Mercados"       },
-    { id: "strategies", icon: "📊", label: "Estratégias",   aiFlag: "aiEstrategias" },
-    { id: "daytrading", icon: "⚡",  label: "Day Trading",   aiFlag: "aiDayTrading" },
-    { id: "ai",         icon: "◆",  label: "AI Intel",      aiFlag: "aiManualAutonomo" },
-    { id: "history",    icon: "≡",  label: "Histórico"      },
-    { id: "sugestoes",  icon: "💡", label: "Sugestões"      },
-    { id: "messages",   icon: "🔔", label: "Mensagens"      },
-    { id: "settings",   icon: "⚙",  label: "Definições"    },
-    { id: "guide",      icon: "◉",  label: "Guia Setup"     },
+    { id: "dashboard",  icon: "🏠", label: "Início"        },
+    { id: "investir",   icon: "🎯", label: "Investir", group: ["dca", "portfolio", "relatorio"] },
+    { id: "markets",    icon: "◎",  label: "Mercados", group: ["markets", "sugestoes"] },
+    { id: "lab",        icon: "⚡",  label: "Laboratório", aiGroup: true, group: ["strategies", "daytrading", "ai"] },
+    { id: "mais",       icon: "⚙",  label: "Mais", group: ["history", "messages", "settings", "guide"] },
   ];
+  // Sub-abas dentro de cada zona agrupada (label + id da página)
+  const SUBTABS = {
+    investir: [
+      { id: "dca",       icon: "🎯", label: "Planos" },
+      { id: "portfolio", icon: "💼", label: "Carteira" },
+      { id: "relatorio", icon: "📊", label: "Relatório" },
+    ],
+    markets: [
+      { id: "markets",   icon: "◎",  label: "Mercados" },
+      { id: "sugestoes", icon: "💡", label: "Sugestões" },
+    ],
+    lab: [
+      { id: "strategies",icon: "📊", label: "Estratégias" },
+      { id: "daytrading",icon: "⚡",  label: "Day Trading" },
+      { id: "ai",        icon: "◆",  label: "AI Intel" },
+    ],
+    mais: [
+      { id: "history",   icon: "≡",  label: "Histórico" },
+      { id: "messages",  icon: "🔔", label: "Mensagens" },
+      { id: "settings",  icon: "⚙",  label: "Definições" },
+      { id: "guide",     icon: "◉",  label: "Guia" },
+    ],
+  };
+  // Qual zona contém um dado tab (para destacar a zona certa no nav)
+  const zonaDoTab = (t) => {
+    for (const z of Object.keys(SUBTABS)) {
+      if (SUBTABS[z].some(s => s.id === t)) return z;
+    }
+    return t; // dashboard/resumo são zonas próprias
+  };
   const aiTradeOn = !!liveSettings.aiTradeAtivo;
   const mestreOn = aiTradeOn || !!liveSettings.aiBrainMestre;
   // Mostra cada separador de trading se o AI Brain (mestre) estiver ON e a sua
   // fonte estiver ON. DCA/Carteira/etc. continuam sempre visíveis.
-  const NAV = NAV_ALL.filter(item => !item.aiFlag || (mestreOn && (aiTradeOn || liveSettings[item.aiFlag])));
+  const NAV = NAV_ALL.filter(item => !item.aiGroup || mestreOn);
 
   // ── Persistência Firestore: carregar estado ao iniciar ──────────────────
   useEffect(() => {
@@ -7541,29 +7585,32 @@ JSON puro:
           height: "calc(100vh - 56px)", position: "sticky", top: 56,
           display: "flex", flexDirection: "column", padding: "10px 0",
         }}>
-          {NAV.filter(item => !item.mobileOnly).map(item => (
-            <div key={item.id} onClick={() => setTab(item.id)} style={{
-              display: "flex", alignItems: "center", gap: 12,
-              padding: "11px 18px", cursor: "pointer", fontSize: 12, fontWeight: 600,
-              color:      tab === item.id ? T.aLight : T.muted,
-              background: tab === item.id ? "rgba(99,102,241,0.1)" : "transparent",
-              borderLeft: `2px solid ${tab === item.id ? T.accent : "transparent"}`,
-              transition: "all 0.12s",
-            }}>
-              <span style={{ fontSize: 15, opacity: tab === item.id ? 1 : 0.55 }}>{item.icon}</span>
-              <span>{item.label}</span>
-              {item.id === "strategies" && strategies.filter(s => s.ativo).length > 0 && (
-                <span style={{ marginLeft: "auto", background: T.accent, color: "#fff", borderRadius: 99, width: 18, height: 18, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 10, fontWeight: 700 }}>
-                  {strategies.filter(s => s.ativo).length}
-                </span>
-              )}
-              {item.id === "portfolio" && activePositions.length > 0 && (
-                <span style={{ marginLeft: "auto", background: T.green, color: "#000", borderRadius: 99, width: 18, height: 18, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 10, fontWeight: 700 }}>
-                  {activePositions.length}
-                </span>
-              )}
-            </div>
-          ))}
+          {NAV.filter(item => !item.mobileOnly).map(item => {
+            const zonaAtiva = zonaDoTab(tab) === item.id || tab === item.id;
+            const irPara = item.group ? item.group[0] : item.id;
+            // Badge de notificação por zona
+            let badge = 0;
+            if (item.id === "investir") badge = manualOrders.length;
+            else if (item.id === "lab") badge = strategies.filter(s => s.ativo).length;
+            return (
+              <div key={item.id} onClick={() => setTab(irPara)} style={{
+                display: "flex", alignItems: "center", gap: 12,
+                padding: "12px 18px", cursor: "pointer", fontSize: 12.5, fontWeight: 700,
+                color:      zonaAtiva ? "#fff" : T.muted,
+                background: zonaAtiva ? T.gradCard : "transparent",
+                borderLeft: `3px solid ${zonaAtiva ? T.accent : "transparent"}`,
+                transition: "all 0.15s",
+              }}>
+                <span style={{ fontSize: 16, opacity: zonaAtiva ? 1 : 0.6 }}>{item.icon}</span>
+                <span>{item.label}</span>
+                {badge > 0 && (
+                  <span style={{ marginLeft: "auto", background: item.id === "investir" ? T.gold : T.accent, color: item.id === "investir" ? "#000" : "#fff", borderRadius: 99, minWidth: 18, height: 18, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 10, fontWeight: 800, padding: "0 5px" }}>
+                    {badge}
+                  </span>
+                )}
+              </div>
+            );
+          })}
           <div style={{ marginTop: "auto", padding: "16px 18px", borderTop: `1px solid ${T.border}` }}>
             <div style={{ fontSize: 9, color: T.muted, letterSpacing: "0.12em", textTransform: "uppercase", marginBottom: 6 }}>Posições Abertas</div>
             <div style={{ fontSize: 22, fontWeight: 700 }}>{activePositions.length}</div>
@@ -7577,6 +7624,38 @@ JSON puro:
 
         {/* MAIN */}
         <main className="resp-main" style={{ flex: 1, padding: "22px", paddingBottom: simMode ? 90 : 22, overflowY: "auto", maxHeight: isMobile ? "none" : "calc(100vh - 56px)" }}>
+          {/* Barra de sub-abas (quando estás numa zona agrupada) */}
+          {(() => {
+            const zona = zonaDoTab(tab);
+            const subs = SUBTABS[zona];
+            if (!subs) return null;
+            return (
+              <div style={{ display: "flex", gap: 6, marginBottom: 20, flexWrap: "wrap", borderBottom: `1px solid ${T.border}`, paddingBottom: 0 }}>
+                {subs.map(s => {
+                  const ativo = tab === s.id;
+                  let badge = 0;
+                  if (s.id === "dca") badge = manualOrders.length;
+                  else if (s.id === "portfolio") badge = activePositions.length;
+                  else if (s.id === "strategies") badge = strategies.filter(x => x.ativo).length;
+                  return (
+                    <div key={s.id} onClick={() => setTab(s.id)} style={{
+                      display: "flex", alignItems: "center", gap: 7, padding: "10px 16px", cursor: "pointer",
+                      fontSize: 12.5, fontWeight: 700, position: "relative",
+                      color: ativo ? "#fff" : T.muted,
+                      borderBottom: `2px solid ${ativo ? T.accent : "transparent"}`,
+                      marginBottom: -1, transition: "all 0.15s",
+                    }}>
+                      <span style={{ fontSize: 14, opacity: ativo ? 1 : 0.6 }}>{s.icon}</span>
+                      <span>{s.label}</span>
+                      {badge > 0 && (
+                        <span style={{ background: s.id === "dca" ? T.gold : T.accent, color: s.id === "dca" ? "#000" : "#fff", borderRadius: 99, minWidth: 16, height: 16, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 9, fontWeight: 800, padding: "0 4px" }}>{badge}</span>
+                      )}
+                    </div>
+                  );
+                })}
+              </div>
+            );
+          })()}
           <div style={{ animation: "fadeIn 0.25s ease" }} key={tab}>
             {tab === "resumo"     && MobileResumo()}
             {tab === "dashboard"  && Dashboard()}
@@ -7606,24 +7685,24 @@ JSON puro:
           paddingBottom: "max(6px, env(safe-area-inset-bottom))",
         }}>
           {NAV.map(item => {
-            const active = tab === item.id;
-            const badge = item.id === "strategies" ? strategies.filter(s => s.ativo).length
-                        : item.id === "portfolio"  ? activePositions.length
-                        : item.id === "dca"         ? manualOrders.length
+            const active = zonaDoTab(tab) === item.id || tab === item.id;
+            const irPara = item.group ? item.group[0] : item.id;
+            const badge = item.id === "investir" ? manualOrders.length
+                        : item.id === "lab"      ? strategies.filter(s => s.ativo).length
                         : 0;
             return (
-              <div key={item.id} onClick={() => { setTab(item.id); window.scrollTo(0,0); }} style={{
+              <div key={item.id} onClick={() => { setTab(irPara); window.scrollTo(0,0); }} style={{
                 flex: "0 0 auto", minWidth: 62, display: "flex", flexDirection: "column",
                 alignItems: "center", gap: 3, padding: "6px 8px", cursor: "pointer",
                 position: "relative",
-                color: active ? T.aLight : T.muted,
+                color: active ? "#fff" : T.muted,
               }}>
                 <span style={{ fontSize: 18, opacity: active ? 1 : 0.6 }}>{item.icon}</span>
                 <span style={{ fontSize: 8.5, fontWeight: active ? 700 : 500, letterSpacing: "0.02em", whiteSpace: "nowrap" }}>{item.label}</span>
                 {active && <div style={{ position: "absolute", top: 0, width: 24, height: 2, background: T.accent, borderRadius: 2 }} />}
                 {badge > 0 && (
-                  <span style={{ position: "absolute", top: 2, right: 10, background: item.id==="portfolio"?T.green:item.id==="dca"?T.gold:T.accent,
-                    color: item.id==="portfolio"||item.id==="dca"?"#000":"#fff", borderRadius: 99, minWidth: 14, height: 14,
+                  <span style={{ position: "absolute", top: 2, right: 10, background: item.id==="investir"?T.gold:T.accent,
+                    color: item.id==="investir"?"#000":"#fff", borderRadius: 99, minWidth: 14, height: 14,
                     display: "flex", alignItems: "center", justifyContent: "center", fontSize: 8, fontWeight: 700, padding: "0 3px" }}>
                     {badge}
                   </span>
