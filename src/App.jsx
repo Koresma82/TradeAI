@@ -18,7 +18,7 @@ async function callAI({ messages, system, max_tokens = 1000 }) {
         "Content-Type": "application/json",
         ...(token ? { Authorization: `Bearer ${token}` } : {}),
       },
-      body: JSON.stringify({ model: "claude-sonnet-4-20250514", max_tokens, system, messages }),
+      body: JSON.stringify({ model: "claude-sonnet-4-5", max_tokens, system, messages }),
     });
     return res;
   };
