@@ -288,6 +288,7 @@ function DCAAssistente({ carteiraAtual, onAplicar, callAI, ASSETS, T, Glass, bro
   const [objetivo, setObjetivo] = useState("ferias");
   const [horizonte, setHorizonte] = useState("2-5");
   const [perfil, setPerfil] = useState("equilibrado");
+  const [tipo, setTipo] = useState("misto"); // misto | cripto | etf — define o que a IA sugere e o modo
   const [valor, setValor] = useState(50);
   const [freq, setFreq] = useState("semanal");
   const [loading, setLoading] = useState(false);
@@ -312,9 +313,17 @@ function DCAAssistente({ carteiraAtual, onAplicar, callAI, ASSETS, T, Glass, bro
     const classesOk = new Set();
     brokersAtivos.forEach(b => (b.assetClasses || []).forEach(c => classesOk.add(c)));
     const catParaClasseLocal = { Crypto: "crypto", ETF: "etf", "Ação": "stock", Commodity: "commodity", Forex: "forex" };
-    const universoAtivos = ASSETS.filter(a => classesOk.has(catParaClasseLocal[a.cat]));
+    let universoAtivos = ASSETS.filter(a => classesOk.has(catParaClasseLocal[a.cat]));
+    // Filtra pelo tipo de plano escolhido: cripto-only, etf-only, ou misto.
+    if (tipo === "cripto") universoAtivos = universoAtivos.filter(a => a.cat === "Crypto");
+    else if (tipo === "etf") universoAtivos = universoAtivos.filter(a => a.cat === "ETF" || a.cat === "Commodity" || a.cat === "Ação");
     const universo = universoAtivos.map(a => `${a.id} (${a.name}, ${a.cat})`).join(", ");
     const nomesBrokers = brokersAtivos.map(b => b.nome).join(" + ");
+    const instrucaoTipo = tipo === "cripto"
+      ? "Este é um plano SÓ DE CRIPTO. Sugere apenas criptomoedas (3 a 4), nunca ETFs nem ações."
+      : tipo === "etf"
+      ? "Este é um plano SÓ DE ETFs/AÇÕES. Sugere apenas ETFs e commodities, nunca criptomoedas."
+      : "Este é um plano MISTO. Podes combinar ETFs e cripto conforme o perfil.";
     try {
       const { result } = await callAI({
         max_tokens: 900,
@@ -326,6 +335,8 @@ function DCAAssistente({ carteiraAtual, onAplicar, callAI, ASSETS, T, Glass, bro
 - Tolerância a risco: ${perfil}
 - Investe €${valor} ${freq}
 - Brokers disponíveis: ${nomesBrokers}
+
+${instrucaoTipo}
 
 Ativos disponíveis (usa SÓ estes ids — são os que os brokers do utilizador conseguem comprar): ${universo}
 
@@ -356,6 +367,19 @@ Responde SÓ com este JSON:
       <div style={{ fontSize: 11, color: T.muted, marginBottom: 18, lineHeight: 1.6 }}>Responde a 4 perguntas simples e a IA sugere-te uma carteira. Podes ajustar tudo depois.</div>
 
       <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
+        <div>
+          <div style={{ fontSize: 11, fontWeight: 600, marginBottom: 8 }}>Tipo de plano</div>
+          <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+            <Opt val="cripto" cur={tipo} set={setTipo}>🤖 Cripto (automático)</Opt>
+            <Opt val="etf" cur={tipo} set={setTipo}>🔔 ETFs/Ações (manual)</Opt>
+            <Opt val="misto" cur={tipo} set={setTipo}>Misto (cripto + ETFs)</Opt>
+          </div>
+          <div style={{ fontSize: 9.5, color: T.muted, marginTop: 6, lineHeight: 1.5 }}>
+            {tipo === "cripto" ? "Só cripto (BTC, ETH…). O bot compra sozinho no Binance — ideal para automação."
+              : tipo === "etf" ? "Só ETFs/ações. Compras tu no XTB quando o bot avisar (manual)."
+              : "Mistura cripto (automática) e ETFs (manual). A parte de ETFs precisa de confirmação tua."}
+          </div>
+        </div>
         <div>
           <div style={{ fontSize: 11, fontWeight: 600, marginBottom: 8 }}>Para que é o dinheiro?</div>
           <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
@@ -427,7 +451,7 @@ Responde SÓ com este JSON:
             </div>
             {sugestao.explicacao && <div style={{ fontSize: 11, color: T.muted, lineHeight: 1.6, marginBottom: 8 }}>{sugestao.explicacao}</div>}
             {sugestao.aviso && <div style={{ fontSize: 10, color: T.gold, lineHeight: 1.5, marginBottom: 12 }}>⚠️ {sugestao.aviso}</div>}
-            <button onClick={() => { onAplicar({ carteira: sugestao.carteira, valorPeriodico: valor, frequencia: freq }); setAberto(false); }}
+            <button onClick={() => { onAplicar({ carteira: sugestao.carteira, valorPeriodico: valor, frequencia: freq, modoExecucao: tipo === "cripto" ? "auto" : tipo === "etf" ? "manual" : undefined }); setAberto(false); }}
               style={{ width: "100%", padding: "10px", borderRadius: 8, border: `1px solid ${T.green}`, background: `${T.green}1a`, color: T.green, fontWeight: 700, fontSize: 12, cursor: "pointer" }}>
               ✓ Usar esta carteira
             </button>
@@ -4188,10 +4212,11 @@ JSON: {"signals":[{"id":"btc","sinal":"COMPRAR|VENDER|AGUARDAR","razao":"1 frase
     const totalAlocado = Object.values(planosEur).reduce((a, v) => a + v, 0) + reservaAi;
     const sobra = +(bolo - totalAlocado).toFixed(2);
 
-    const novoPlano = (carteira, alocacao, frequencia, nome) => {
+    const novoPlano = (carteira, alocacao, frequencia, nome, modoExecucao) => {
       const id = "p_" + Date.now().toString(36);
       const p = { id, nome: nome || "Novo plano", carteira, alocacao: alocacao || { tipo: "pct", valor: 0 },
-        frequencia: frequencia || "mensal", dataInicio: null, proximaCompra: null, reequilibrar: true };
+        frequencia: frequencia || "mensal", dataInicio: null, proximaCompra: null, reequilibrar: true,
+        ...(modoExecucao ? { modoExecucao } : {}) };
       salvar({ dcaPlanos: [...planos, p] }, `✅ Plano "${p.nome}" criado`);
     };
     const updPlano = (id, patch) => salvar({ dcaPlanos: planos.map(p => p.id === id ? { ...p, ...patch } : p) });
@@ -4612,7 +4637,7 @@ JSON: {"signals":[{"id":"btc","sinal":"COMPRAR|VENDER|AGUARDAR","razao":"1 frase
         <Glass style={{ padding: "18px 22px", border: `1px dashed ${T.border}` }}>
           <div style={{ fontSize: 13, fontWeight: 700, marginBottom: 10 }}>➕ Criar novo plano</div>
           <DCAAssistente carteiraAtual={[]} onAplicar={(plano) => {
-            novoPlano(plano.carteira, { tipo: "pct", valor: 0 }, plano.frequencia, plano.nome || "Novo plano");
+            novoPlano(plano.carteira, { tipo: "pct", valor: 0 }, plano.frequencia, plano.nome || "Novo plano", plano.modoExecucao);
           }} callAI={callAI} ASSETS={ASSETS} T={T} Glass={Glass} brokersDisp={brokersDisp} />
           <button onClick={() => novoPlano([], { tipo: "pct", valor: 0 }, "mensal", "Plano manual")}
             style={{ marginTop: 10, padding: "8px 16px", borderRadius: 8, border: `1px solid ${T.border}`, background: "transparent", color: T.muted, fontSize: 11, cursor: "pointer" }}>
