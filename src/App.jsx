@@ -4564,20 +4564,30 @@ JSON: {"signals":[{"id":"btc","sinal":"COMPRAR|VENDER|AGUARDAR","razao":"1 frase
                       disabled={!podeIniciar}
                       onClick={() => {
                         if (!user || !podeIniciar) return;
-                        const itens = (p.carteira || []).filter(c => c.peso > 0).map(c => {
-                          const a = assets.find(x => x.id === c.id);
-                          const eur = +(valorP * (c.peso / (somaPesos || 100))).toFixed(2);
-                          return { assetId: c.id, eur, preco: a?.price || 0 };
-                        }).filter(i => i.eur >= 1 && i.preco > 0);
-                        if (!itens.length) { toast("Sem preços disponíveis para iniciar agora.", "warn"); return; }
+                        const ehAuto = (p.modoExecucao || "auto") === "auto";
                         // Marca o plano como iniciado (data de início = agora).
                         updPlano(p.id, { dataInicio: Date.now() });
-                        // Envia a primeira compra ao bot (ele é quem executa).
-                        import("./firebase.js").then(({ sendCommand }) => {
-                          sendCommand(user.uid, { type: "DCA_MANUAL_CONFIRM", planId: p.id, planNome: p.nome, broker: p.brokerId, itens })
-                            .then(() => toast(`🚀 Plano "${p.nome}" iniciado — primeira compra enviada ao bot`, "success"))
-                            .catch(() => toast("Erro ao iniciar o plano.", "error"));
-                        });
+                        if (ehAuto) {
+                          // Plano automático: o bot EXECUTA a compra no broker (Binance/Alpaca).
+                          import("./firebase.js").then(({ sendCommand }) => {
+                            sendCommand(user.uid, { type: "DCA_INICIAR", planId: p.id, planNome: p.nome, valorPlano: valorP })
+                              .then(() => toast(`🚀 Plano "${p.nome}" iniciado — o bot vai comprar no broker`, "success"))
+                              .catch(() => toast("Erro ao iniciar o plano.", "error"));
+                          });
+                        } else {
+                          // Plano manual: regista as posições (compraste tu no broker).
+                          const itens = (p.carteira || []).filter(c => c.peso > 0).map(c => {
+                            const a = assets.find(x => x.id === c.id);
+                            const eur = +(valorP * (c.peso / (somaPesos || 100))).toFixed(2);
+                            return { assetId: c.id, eur, preco: a?.price || 0 };
+                          }).filter(i => i.eur >= 1 && i.preco > 0);
+                          if (!itens.length) { toast("Sem preços disponíveis para iniciar agora.", "warn"); return; }
+                          import("./firebase.js").then(({ sendCommand }) => {
+                            sendCommand(user.uid, { type: "DCA_MANUAL_CONFIRM", planId: p.id, planNome: p.nome, broker: p.brokerId, itens })
+                              .then(() => toast(`🚀 Plano "${p.nome}" iniciado — primeira compra registada`, "success"))
+                              .catch(() => toast("Erro ao iniciar o plano.", "error"));
+                          });
+                        }
                       }}
                       style={{
                         width: "100%", padding: "12px", borderRadius: 11, border: "none",
