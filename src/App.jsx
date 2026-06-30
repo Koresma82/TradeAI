@@ -4544,6 +4544,55 @@ JSON: {"signals":[{"id":"btc","sinal":"COMPRAR|VENDER|AGUARDAR","razao":"1 frase
                   style={{ padding: "7px 14px", borderRadius: 8, border: `1px solid ${T.accent}`, background: `${T.accent}1a`, color: T.accent, fontWeight: 700, fontSize: 11, cursor: "pointer" }}>+ Ativo</button>
               </div>
 
+              {/* Botão Iniciar plano: faz a 1ª compra agora e arranca o agendamento.
+                  Fica desabilitado depois de iniciado. Útil em paper e em live
+                  (arranca o plano; o bot continua sozinho nas datas seguintes). */}
+              {(() => {
+                const valorP = planosEur[p.id] || 0;
+                const carteiraOk = (p.carteira || []).filter(c => c.peso > 0).length > 0;
+                const somaPesos = (p.carteira || []).reduce((a, c) => a + (c.peso || 0), 0);
+                const iniciado = !!p.dataInicio;
+                const podeIniciar = !iniciado && valorP >= 1 && carteiraOk && Math.abs(somaPesos - 100) < 0.5;
+                let aviso = "";
+                if (iniciado) aviso = "Plano já iniciado — o bot compra sozinho nas próximas datas.";
+                else if (valorP < 1) aviso = "Define a alocação (% do bolo ou €) — está a €0/período.";
+                else if (!carteiraOk) aviso = "Adiciona pelo menos um ativo com peso.";
+                else if (Math.abs(somaPesos - 100) >= 0.5) aviso = `Os pesos somam ${somaPesos.toFixed(0)}% — têm de somar 100%.`;
+                return (
+                  <div style={{ marginBottom: 14 }}>
+                    <button
+                      disabled={!podeIniciar}
+                      onClick={() => {
+                        if (!user || !podeIniciar) return;
+                        const itens = (p.carteira || []).filter(c => c.peso > 0).map(c => {
+                          const a = assets.find(x => x.id === c.id);
+                          const eur = +(valorP * (c.peso / (somaPesos || 100))).toFixed(2);
+                          return { assetId: c.id, eur, preco: a?.price || 0 };
+                        }).filter(i => i.eur >= 1 && i.preco > 0);
+                        if (!itens.length) { toast("Sem preços disponíveis para iniciar agora.", "warn"); return; }
+                        // Marca o plano como iniciado (data de início = agora).
+                        updPlano(p.id, { dataInicio: Date.now() });
+                        // Envia a primeira compra ao bot (ele é quem executa).
+                        import("./firebase.js").then(({ sendCommand }) => {
+                          sendCommand(user.uid, { type: "DCA_MANUAL_CONFIRM", planId: p.id, planNome: p.nome, broker: p.brokerId, itens })
+                            .then(() => toast(`🚀 Plano "${p.nome}" iniciado — primeira compra enviada ao bot`, "success"))
+                            .catch(() => toast("Erro ao iniciar o plano.", "error"));
+                        });
+                      }}
+                      style={{
+                        width: "100%", padding: "12px", borderRadius: 11, border: "none",
+                        background: podeIniciar ? T.gradGreen : "rgba(255,255,255,0.06)",
+                        color: podeIniciar ? "#04120c" : T.muted,
+                        fontWeight: 800, fontSize: 13, cursor: podeIniciar ? "pointer" : "not-allowed",
+                        boxShadow: podeIniciar ? `0 4px 16px ${T.green}44` : "none",
+                      }}>
+                      {iniciado ? "✓ Plano em curso" : "🚀 Iniciar plano (1ª compra agora)"}
+                    </button>
+                    {aviso && <div style={{ fontSize: 9.5, color: iniciado ? T.green : T.gold, marginTop: 6, textAlign: "center" }}>{aviso}</div>}
+                  </div>
+                );
+              })()}
+
               {/* Projeção de ganhos — cenários, com avisos claros */}
               {(p.carteira || []).length > 0 && (() => {
                 const eurPlano = planosEur[p.id] || 0;
