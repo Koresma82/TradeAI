@@ -1429,6 +1429,7 @@ JSON puro — inclui TODOS os ativos relevantes de TODAS as categorias:
     const stratIds = new Set(strategies.map(s => s.id));
     const stratNomes = new Map(strategies.map(s => [s.id, s.nome]));
     const origemDe = (p) => {
+      if (p.stratId === "dca")        return { key: "dca", label: p.planNome ? `DCA · ${p.planNome}` : "DCA", icon: "🎯", cor: T.accent };
       if (p.stratId === "daytrading") return { key: "daytrade", label: "Day Trading", icon: "⚡", cor: T.gold };
       if (p.stratId === "manual")     return { key: "manual",   label: "Compras manuais", icon: "✋", cor: T.accent };
       if (p.stratId === "ai-brain")   return p.aiSource === "tecnico"
@@ -2953,7 +2954,8 @@ JSON: {"signals":[{"id":"btc","sinal":"COMPRAR|VENDER|AGUARDAR","razao":"1 frase
                                 {pos.mode==="sim" && <Badge label="SIM" color={T.gold}/>}
                                 <Badge label={open?"ABERTO":"FECHADO"} color={open?T.green:T.red}/>
                                 {(() => {
-                                  const o = pos.stratId === "ai-brain"   ? (pos.aiSource === "tecnico" ? { l:"🧮 AI Técnico", c:T.blue } : { l:"🤖 AI Brain", c:T.accent })
+                                  const o = pos.stratId === "dca"        ? { l: pos.planNome ? `🎯 DCA · ${pos.planNome}` : "🎯 DCA", c:T.accent }
+                                          : pos.stratId === "ai-brain"   ? (pos.aiSource === "tecnico" ? { l:"🧮 AI Técnico", c:T.blue } : { l:"🤖 AI Brain", c:T.accent })
                                           : pos.stratId === "daytrading" ? { l:"⚡ Day Trade",  c:T.gold }
                                           : pos.stratId === "manual"     ? { l:"✋ Manual",     c:T.muted }
                                           :                                { l:"🎯 Estratégia", c:T.blue };
@@ -4220,7 +4222,47 @@ JSON: {"signals":[{"id":"btc","sinal":"COMPRAR|VENDER|AGUARDAR","razao":"1 frase
       salvar({ dcaPlanos: [...planos, p] }, `✅ Plano "${p.nome}" criado`);
     };
     const updPlano = (id, patch) => salvar({ dcaPlanos: planos.map(p => p.id === id ? { ...p, ...patch } : p) });
-    const delPlano = (id) => salvar({ dcaPlanos: planos.filter(p => p.id !== id) }, "Plano removido");
+    const delPlano = (id) => {
+      const plano = planos.find(p => p.id === id);
+      const posAbertas = positions.filter(x => (x.status === "ABERTA" || !x.status) && x.stratId === "dca" && (x.planId || "principal") === id);
+      if (posAbertas.length > 0) {
+        // O plano tem posições abertas — perguntar o que fazer, para não deixar órfãs.
+        setConfirmModal({
+          title: `Apagar plano "${plano?.nome || ""}"?`,
+          message: `Este plano tem ${posAbertas.length} posição(ões) aberta(s). O que queres fazer?`,
+          lines: posAbertas.map(x => `${(x.assetSym || x.assetId).toUpperCase()} — €${(x.amount || 0).toFixed(0)}`),
+          icon: "🎯",
+          confirmLabel: "Vender tudo e apagar",
+          extraLabel: "Apagar e manter posições",
+          extra2Label: mestreOn ? "🤖 Passar para o AI gerir" : null,
+          onConfirm: () => {
+            // Vende todas as posições do plano, depois apaga o plano.
+            posAbertas.forEach(pos => cmdToBot({ type: "SELL", posId: pos.id, assetId: pos.assetId }));
+            salvar({ dcaPlanos: planos.filter(p => p.id !== id) }, "Plano apagado — posições vendidas");
+            setConfirmModal(null);
+          },
+          onExtra: () => {
+            // Apaga o plano mas mantém as posições (ficam órfãs, geridas na mesma).
+            salvar({ dcaPlanos: planos.filter(p => p.id !== id) }, "Plano apagado — posições mantidas");
+            setConfirmModal(null);
+          },
+          onExtra2: () => {
+            // Passa para o AI gerir: pede o lucro-alvo e envia o comando.
+            setConfirmModal(null);
+            const alvoStr = window.prompt("A que percentagem de lucro (líquida de taxas) queres que o AI venda cada posição?\n\nEx.: 5 = vende quando estiver +5% em lucro real.\nO AI nunca vende a perder — só realiza lucro.", "5");
+            const alvo = parseFloat(alvoStr);
+            if (!alvo || alvo <= 0) { toast("Lucro-alvo inválido. Nada alterado.", "warn"); return; }
+            if (user) import("./firebase.js").then(({ sendCommand }) => {
+              sendCommand(user.uid, { type: "DCA_TO_AI", planId: id, lucroAlvo: alvo })
+                .then(() => { salvar({ dcaPlanos: planos.filter(p => p.id !== id) }, `🤖 Posições passadas ao AI (vende a +${alvo}%)`); })
+                .catch(() => toast("Erro ao passar para o AI.", "error"));
+            });
+          },
+        });
+      } else {
+        salvar({ dcaPlanos: planos.filter(p => p.id !== id) }, "Plano removido");
+      }
+    };
 
     return (
       <div style={{ display: "flex", flexDirection: "column", gap: 16, maxWidth: 940 }}>
@@ -4503,6 +4545,20 @@ JSON: {"signals":[{"id":"btc","sinal":"COMPRAR|VENDER|AGUARDAR","razao":"1 frase
                 </span>
               </div>
 
+              {/* Reequilíbrio automático: manter as % da carteira (vende excesso, recompra em falta) */}
+              <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 12, padding: "8px 12px", borderRadius: 8, background: "rgba(0,0,0,0.15)" }}>
+                <span style={{ fontSize: 16 }}>⚖️</span>
+                <div style={{ flex: 1 }}>
+                  <div style={{ fontSize: 11, fontWeight: 700 }}>Reequilíbrio automático</div>
+                  <div style={{ fontSize: 9, color: T.muted, lineHeight: 1.4 }}>Mantém as percentagens da carteira: se um ativo cresce demais, vende o excesso e reforça os outros. Desliga para nunca vender (só acumular).</div>
+                </div>
+                <div onClick={() => updPlano(p.id, { reequilibrar: p.reequilibrar === false ? true : false })} style={{ cursor: "pointer" }}>
+                  <div style={{ width: 42, height: 23, borderRadius: 12, background: p.reequilibrar !== false ? T.green : "rgba(255,255,255,0.1)", position: "relative", transition: "all 0.2s" }}>
+                    <div style={{ position: "absolute", top: 3, left: p.reequilibrar !== false ? 21 : 3, width: 17, height: 17, borderRadius: "50%", background: "#fff", transition: "left 0.2s" }} />
+                  </div>
+                </div>
+              </div>
+
               {/* Alocação */}
               <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 12 }}>
                 <span style={{ fontSize: 10, color: T.muted }}>Alocar:</span>
@@ -4523,16 +4579,38 @@ JSON: {"signals":[{"id":"btc","sinal":"COMPRAR|VENDER|AGUARDAR","razao":"1 frase
 
               {/* Carteira do plano */}
               <div style={{ display: "flex", flexDirection: "column", gap: 6, marginBottom: 10 }}>
-                {(p.carteira || []).map((c, i) => (
-                  <div key={c.id} style={{ display: "flex", alignItems: "center", gap: 10, background: "rgba(0,0,0,0.2)", borderRadius: 8, padding: "8px 12px" }}>
+                {(p.carteira || []).map((c, i) => {
+                  // Capital investido, preço médio e preço atual deste ativo no plano (só consulta).
+                  const posAtivo = positions.filter(x => (x.status === "ABERTA" || !x.status) && x.stratId === "dca" && (x.planId || "principal") === p.id && x.assetId === c.id);
+                  const invAtivo = posAtivo.reduce((a, x) => a + (x.amount || 0), 0);
+                  const unitsAtivo = posAtivo.reduce((a, x) => a + (x.units || 0), 0);
+                  const precoMedio = unitsAtivo > 0 ? invAtivo / unitsAtivo : 0;
+                  const precoAtual = (assets.find(z => z.id === c.id) || {}).price || 0;
+                  const plAtivo = unitsAtivo > 0 && precoAtual ? (precoAtual - precoMedio) * unitsAtivo : 0;
+                  const pctAtivo = invAtivo > 0 ? (plAtivo / invAtivo) * 100 : 0;
+                  const corA = plAtivo >= 0 ? T.green : T.red;
+                  return (
+                  <div key={c.id} style={{ background: "rgba(0,0,0,0.2)", borderRadius: 8, padding: "8px 12px" }}>
+                    <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
                     <span style={{ flex: 1, fontSize: 11.5 }}>{nomeAtivo(c.id)}</span>
+                    {invAtivo > 0 && <span style={{ fontSize: 10, color: corA, fontWeight: 700, background: `${corA}12`, padding: "2px 8px", borderRadius: 6 }}>{plAtivo >= 0 ? "+" : ""}{pctAtivo.toFixed(1)}%</span>}
                     <input type="number" min={0} max={100} value={c.peso}
                       onChange={(e) => { const nc = [...p.carteira]; nc[i] = { ...nc[i], peso: Math.max(0, Math.min(100, parseInt(e.target.value) || 0)) }; updPlano(p.id, { carteira: nc }); }}
                       style={{ width: 52, padding: "4px 8px", borderRadius: 6, border: `1px solid ${T.border}`, background: "rgba(0,0,0,0.3)", color: T.aLight, fontSize: 12, textAlign: "right" }} />
                     <span style={{ fontSize: 10, color: T.muted }}>%</span>
                     <button onClick={() => updPlano(p.id, { carteira: p.carteira.filter((_, j) => j !== i) })} style={{ border: "none", background: "none", color: T.red, cursor: "pointer", fontSize: 14 }}>×</button>
+                    </div>
+                    {invAtivo > 0 && (
+                      <div style={{ fontSize: 9, color: T.muted, marginTop: 6, display: "flex", gap: 12, flexWrap: "wrap" }}>
+                        <span>€{invAtivo.toFixed(0)} investido</span>
+                        <span>médio: ${precoMedio < 1 ? precoMedio.toFixed(4) : precoMedio.toFixed(2)}</span>
+                        <span>atual: ${precoAtual < 1 ? precoAtual.toFixed(4) : precoAtual.toFixed(2)}</span>
+                        <span style={{ color: corA, fontWeight: 700 }}>{plAtivo >= 0 ? "+" : ""}€{plAtivo.toFixed(2)}</span>
+                      </div>
+                    )}
                   </div>
-                ))}
+                  );
+                })}
                 {somaPesos !== 100 && (p.carteira || []).length > 0 && <div style={{ fontSize: 9.5, color: T.gold }}>Pesos somam {somaPesos}% (deviam somar 100%)</div>}
               </div>
 
@@ -4654,6 +4732,25 @@ JSON: {"signals":[{"id":"btc","sinal":"COMPRAR|VENDER|AGUARDAR","razao":"1 frase
                       );
                     })()}
                     <div style={{ fontSize: 11, fontWeight: 800, marginBottom: 8 }}>📈 Projeção (investindo ~€{Math.round(porMes)}/mês)</div>
+                    {/* Estado ao dia de hoje: já a ganhar ou a perder (real) */}
+                    {(() => {
+                      const posP = positions.filter(x => (x.status === "ABERTA" || !x.status) && x.stratId === "dca" && (x.planId || "principal") === p.id);
+                      if (!posP.length) return null;
+                      const inv = posP.reduce((a, x) => a + (x.amount || 0), 0);
+                      const val = posP.reduce((a, x) => { const px = assets.find(z => z.id === x.assetId); return a + (px ? x.units * px.price : (x.amount || 0)); }, 0);
+                      const pl = val - inv;
+                      const pct = inv > 0 ? (pl / inv) * 100 : 0;
+                      const cor = pl >= 0 ? T.green : T.red;
+                      return (
+                        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "10px 14px", borderRadius: 9, background: `${cor}10`, border: `1px solid ${cor}33`, marginBottom: 10 }}>
+                          <span style={{ fontSize: 10.5, color: T.muted }}>Ao dia de hoje</span>
+                          <span style={{ display: "flex", gap: 10, alignItems: "center" }}>
+                            <span style={{ fontSize: 13, fontWeight: 800, color: cor }}>{pl >= 0 ? "+" : ""}€{pl.toFixed(2)}</span>
+                            <span style={{ fontSize: 11, fontWeight: 700, color: cor, background: `${cor}18`, padding: "2px 8px", borderRadius: 6 }}>{pl >= 0 ? "+" : ""}{pct.toFixed(2)}%</span>
+                          </span>
+                        </div>
+                      );
+                    })()}
                     <div style={{ overflowX: "auto" }}>
                       <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 10.5 }}>
                         <thead>
@@ -4685,6 +4782,36 @@ JSON: {"signals":[{"id":"btc","sinal":"COMPRAR|VENDER|AGUARDAR","razao":"1 frase
                     <div style={{ fontSize: 8.5, color: T.gold, marginTop: 8, lineHeight: 1.5 }}>
                       ⚠️ Estimativas MUITO aproximadas baseadas em médias históricas — não são promessas. Os mercados podem cair e perderes dinheiro. Rendimentos passados não garantem futuros. Não é aconselhamento financeiro.
                     </div>
+                    {/* Simulador retroativo: "e se tivesse começado há X meses" */}
+                    {(() => {
+                      const mensal = porMes;
+                      if (mensal < 1) return null;
+                      const retAnualSim = 0.12; // média histórica conservadora ~12%/ano
+                      const cenarios = [6, 12, 24];
+                      return (
+                        <div style={{ marginTop: 14, paddingTop: 14, borderTop: `1px solid ${T.border}` }}>
+                          <div style={{ fontSize: 11, fontWeight: 800, marginBottom: 8 }}>⏮️ E se tivesses começado há…</div>
+                          <div style={{ display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: 8 }}>
+                            {cenarios.map(meses => {
+                              const investido = mensal * meses;
+                              // Valor futuro de uma série de aportes mensais compostos.
+                              const rMensal = Math.pow(1 + retAnualSim, 1/12) - 1;
+                              const valor = rMensal > 0 ? mensal * ((Math.pow(1 + rMensal, meses) - 1) / rMensal) : investido;
+                              const ganho = valor - investido;
+                              return (
+                                <div key={meses} style={{ padding: "10px", borderRadius: 8, background: "rgba(0,0,0,0.2)", textAlign: "center" }}>
+                                  <div style={{ fontSize: 9, color: T.muted }}>há {meses} meses</div>
+                                  <div style={{ fontSize: 13, fontWeight: 800, color: T.green, marginTop: 3 }}>€{Math.round(valor)}</div>
+                                  <div style={{ fontSize: 8.5, color: T.muted }}>investido €{Math.round(investido)}</div>
+                                  <div style={{ fontSize: 9, color: T.green, fontWeight: 700 }}>+€{Math.round(ganho)}</div>
+                                </div>
+                              );
+                            })}
+                          </div>
+                          <div style={{ fontSize: 8.5, color: T.muted, marginTop: 6, textAlign: "center" }}>Ilustração ao retorno médio histórico (~12%/ano) — mostra o valor da consistência e do tempo.</div>
+                        </div>
+                      );
+                    })()}
                   </div>
                 );
               })()}
@@ -4773,7 +4900,8 @@ JSON: {"signals":[{"id":"btc","sinal":"COMPRAR|VENDER|AGUARDAR","razao":"1 frase
 
     // Classificar origem de cada trade
     const origemDe = (t) =>
-      t.stratId === "ai-brain"   ? (t.aiSource === "tecnico" ? "🧮 AI Técnico" : "🤖 AI Brain")
+      t.stratId === "dca"        ? (t.planNome ? `🎯 DCA · ${t.planNome}` : "🎯 DCA")
+      : t.stratId === "ai-brain"   ? (t.aiSource === "tecnico" ? "🧮 AI Técnico" : "🤖 AI Brain")
       : t.stratId === "manual"   ? "✋ Manual"
       : t.stratId === "daytrading" ? "⚡ Day Trading"
       : "🎯 Estratégias";
@@ -5501,6 +5629,34 @@ JSON: {"signals":[{"id":"btc","sinal":"COMPRAR|VENDER|AGUARDAR","razao":"1 frase
                             }}
                           >{t.hold ? "🔒 HOLD" : "○ Hold"}</button>
                         ) : <span style={{ color: T.muted }}>—</span>}
+                        {/* Toggle "só vender lucro" com % editável (posições abertas, não sim) */}
+                        {(t.status === "ABERTA" || !t.status) && !simMode && (
+                          <div style={{ display: "inline-flex", alignItems: "center", gap: 4, marginLeft: 6 }}>
+                            <button
+                              onClick={() => {
+                                if (!user) return;
+                                const ativar = !t.aiGerido;
+                                const alvo = Number(t.lucroAlvo) || 2;
+                                cmdToBot({ type: "POS_VENDER_LUCRO", posId: t.id, ativar, lucroAlvo: alvo },
+                                  ativar ? `🎯 ${t.assetSym || t.assetId}: só vende a +${alvo}%` : `Modo lucro desligado em ${t.assetSym || t.assetId}`);
+                              }}
+                              title="Só vende quando a posição estiver em lucro (líquido de taxas)"
+                              style={{ padding: "3px 8px", borderRadius: 6, fontSize: 9, fontWeight: 700, cursor: "pointer", fontFamily: "inherit",
+                                background: t.aiGerido ? `${T.green}22` : "transparent", border: `1px solid ${t.aiGerido ? T.green : T.border}`, color: t.aiGerido ? T.green : T.muted }}
+                            >{t.aiGerido ? "🎯 só lucro" : "○ só lucro"}</button>
+                            {t.aiGerido && (
+                              <span style={{ display: "inline-flex", alignItems: "center", gap: 2 }}>
+                                <input type="number" min={0.5} step={0.5} defaultValue={t.lucroAlvo || 2}
+                                  onBlur={(e) => {
+                                    const alvo = parseFloat(e.target.value);
+                                    if (alvo > 0 && user) cmdToBot({ type: "POS_VENDER_LUCRO", posId: t.id, ativar: true, lucroAlvo: alvo }, `🎯 ${t.assetSym || t.assetId}: alvo atualizado para +${alvo}%`);
+                                  }}
+                                  style={{ width: 40, padding: "2px 4px", borderRadius: 5, border: `1px solid ${T.border}`, background: "rgba(0,0,0,0.3)", color: T.green, fontSize: 9, textAlign: "right" }} />
+                                <span style={{ fontSize: 9, color: T.muted }}>%</span>
+                              </span>
+                            )}
+                          </div>
+                        )}
                       </td>
                       <td style={{ padding: "9px 10px" }}>
                         {(() => {
@@ -5527,7 +5683,7 @@ JSON: {"signals":[{"id":"btc","sinal":"COMPRAR|VENDER|AGUARDAR","razao":"1 frase
                           return (
                             <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
                               <Badge label={lbl} color={c} />
-                              {isOpen && !simMode && (
+                              {isOpen && !simMode && t.stratId !== "dca" && (
                                 <button
                                   onClick={() => {
                                     cmdToBot({ type: "SELL", posId: t.id, assetId: t.assetId },
@@ -5536,6 +5692,9 @@ JSON: {"signals":[{"id":"btc","sinal":"COMPRAR|VENDER|AGUARDAR","razao":"1 frase
                                   title="Pedir ao bot para vender esta posição"
                                   style={{ background: `${T.red}18`, border: `1px solid ${T.red}44`, color: T.red, borderRadius: 6, padding: "3px 8px", fontSize: 9, fontWeight: 700, cursor: "pointer", fontFamily: "inherit", whiteSpace: "nowrap" }}
                                 >▼ Vender</button>
+                              )}
+                              {isOpen && !simMode && t.stratId === "dca" && (
+                                <span style={{ fontSize: 8.5, color: T.muted, fontStyle: "italic" }}>DCA · segurar</span>
                               )}
                             </div>
                           );
@@ -7827,6 +7986,9 @@ JSON puro:
         ::-webkit-scrollbar-thumb { background:rgba(255,255,255,0.1); border-radius:4px; }
         input::placeholder { color:rgba(107,114,128,0.5); }
         input:focus { outline: none; border-color: rgba(99,102,241,0.6) !important; box-shadow: 0 0 0 3px rgba(99,102,241,0.1) !important; }
+        select { color: #e8ecf8; background-color: #0d0d28; }
+        select option { background-color: #0d0d28 !important; color: #e8ecf8 !important; }
+        select:focus { outline: none; border-color: rgba(124,122,255,0.6) !important; }
         @keyframes pulse { 0%,100%{opacity:1} 50%{opacity:0.35} }
         @keyframes fadeIn { from{opacity:0;transform:translateY(8px)} to{opacity:1;transform:none} }
 
@@ -8135,12 +8297,26 @@ JSON puro:
                 ))}
               </div>
             )}
-            <div style={{ display: "flex", gap: 10 }}>
+            <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
               <button onClick={() => setConfirmModal(null)} style={{
                 flex: 1, background: "rgba(255,255,255,0.05)", border: `1px solid ${T.border}`,
                 borderRadius: 11, padding: "13px", fontSize: 13, color: T.muted,
                 cursor: "pointer", fontFamily: "inherit", fontWeight: 700,
               }}>{confirmModal.cancelLabel || "Cancelar"}</button>
+              {confirmModal.extraLabel && (
+                <button onClick={() => { const fn = confirmModal.onExtra; setConfirmModal(null); fn?.(); }} style={{
+                  flex: 1.2, background: "rgba(255,255,255,0.05)", border: `1px solid ${T.border}`,
+                  borderRadius: 11, padding: "13px", fontSize: 12, color: T.aLight,
+                  cursor: "pointer", fontFamily: "inherit", fontWeight: 700,
+                }}>{confirmModal.extraLabel}</button>
+              )}
+              {confirmModal.extra2Label && (
+                <button onClick={() => { const fn = confirmModal.onExtra2; setConfirmModal(null); fn?.(); }} style={{
+                  flex: 1.3, background: `${T.accent}1e`, border: `1px solid ${T.accent}55`,
+                  borderRadius: 11, padding: "13px", fontSize: 12, color: T.aLight,
+                  cursor: "pointer", fontFamily: "inherit", fontWeight: 700,
+                }}>{confirmModal.extra2Label}</button>
+              )}
               <button onClick={() => {
                 const fn = confirmModal.onConfirm;
                 setConfirmModal(null);
