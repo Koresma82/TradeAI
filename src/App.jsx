@@ -686,6 +686,7 @@ export default function TradeAI() {
   const [positions, setPositions] = useState([]);
   const [manualOrders, setManualOrders] = useState([]); // ordens DCA manuais pendentes
   const [dcaAportes, setDcaAportes] = useState({}); // contabilidade de aportes confirmados por plano
+  const [planoAberto, setPlanoAberto] = useState(null); // acordeão dos planos DCA (estado no topo p/ não violar regras de hooks)
   const [portfolioHist, setPortfolioHist] = useState([]); // pontos diários do valor da carteira
   const [closed, setClosed]       = useState([]);
   const [strategies, setStrategies] = useState([]);
@@ -4229,8 +4230,9 @@ JSON: {"signals":[{"id":"btc","sinal":"COMPRAR|VENDER|AGUARDAR","razao":"1 frase
   const PlanoDCA = () => {
     const s = liveSettings;
     const docKey = botModoReal ? "realSettings" : "paperSettings";
-    // Acordeão: qual plano está expandido (só um de cada vez). null = todos fechados.
-    const [planoAberto, setPlanoAberto] = useState(null);
+    // (planoAberto vem do estado do componente principal — não pode ser useState
+    //  aqui porque PlanoDCA é chamado como função condicional, o que violaria as
+    //  regras dos hooks e causava o React error #310.)
     const salvar = (patch, msg) => {
       const novo = { ...liveSettings, ...patch };
       if (user) import("./firebase.js").then(({ saveSetting }) => saveSetting(user.uid, docKey, novo).catch(() => {}));
