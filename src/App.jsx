@@ -686,6 +686,7 @@ export default function TradeAI() {
   const [positions, setPositions] = useState([]);
   const [manualOrders, setManualOrders] = useState([]); // ordens DCA manuais pendentes
   const [dcaAportes, setDcaAportes] = useState({}); // contabilidade de aportes confirmados por plano
+  const [portfolioHist, setPortfolioHist] = useState([]); // pontos diários do valor da carteira
   const [closed, setClosed]       = useState([]);
   const [strategies, setStrategies] = useState([]);
   const [objective, setObjective]   = useState("");
@@ -1462,6 +1463,34 @@ JSON puro — inclui TODOS os ativos relevantes de TODAS as categorias:
 
     return (
       <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
+        {/* ── Hero DCA: destaque do núcleo (valor total investido em planos + P&L) ── */}
+        {(() => {
+          const posDca = positions.filter(x => (x.status === "ABERTA" || !x.status) && x.stratId === "dca");
+          if (!posDca.length) return null;
+          const inv = posDca.reduce((a, x) => a + (x.amount || 0), 0);
+          const val = posDca.reduce((a, x) => { const px = assets.find(z => z.id === x.assetId); return a + (px ? x.units * px.price : (x.amount || 0)); }, 0);
+          const pl = val - inv;
+          const pct = inv > 0 ? (pl / inv) * 100 : 0;
+          const cor = pl >= 0 ? T.green : T.red;
+          const nPlanos = Array.isArray(liveSettings.dcaPlanos) ? liveSettings.dcaPlanos.filter(p => p.dataInicio).length : 0;
+          return (
+            <Glass glow style={{ padding: "24px 28px" }}>
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", flexWrap: "wrap", gap: 16 }}>
+                <div>
+                  <div style={{ fontSize: 10.5, color: T.muted, letterSpacing: "0.1em", textTransform: "uppercase", marginBottom: 6 }}>🎯 A tua carteira DCA</div>
+                  <div style={{ fontSize: 34, fontWeight: 800, lineHeight: 1.1, background: T.gradGreen, WebkitBackgroundClip: "text", WebkitTextFillColor: "transparent", backgroundClip: "text" }}>€{val.toFixed(2)}</div>
+                  <div style={{ fontSize: 11, color: T.muted, marginTop: 4 }}>{nPlanos} plano(s) · investido €{inv.toFixed(0)}</div>
+                </div>
+                <div style={{ textAlign: "right" }}>
+                  <div style={{ fontSize: 10.5, color: T.muted, textTransform: "uppercase" }}>Lucro / Prejuízo</div>
+                  <div style={{ fontSize: 24, fontWeight: 800, color: cor }}>{pl >= 0 ? "+" : ""}€{pl.toFixed(2)}</div>
+                  <div style={{ fontSize: 12, fontWeight: 700, color: cor, background: `${cor}15`, padding: "2px 10px", borderRadius: 6, display: "inline-block", marginTop: 4 }}>{pl >= 0 ? "+" : ""}{pct.toFixed(2)}%</div>
+                </div>
+              </div>
+            </Glass>
+          );
+        })()}
+
         {/* ── Modo de operação: DCA (sempre) + toggle AI Trade ── */}
         {(() => {
           const s = liveSettings;
@@ -1743,6 +1772,7 @@ JSON puro — inclui TODOS os ativos relevantes de TODAS as categorias:
         {/* KPIs row */}
         <div className="resp-grid" style={{ display: "grid", gridTemplateColumns: "repeat(5,1fr)", gap: 12 }}>
           {[
+            { l: "Planos DCA", v: (Array.isArray(liveSettings.dcaPlanos) ? liveSettings.dcaPlanos.filter(p => p.dataInicio).length : 0), c: T.green },
             { l: "Estratégias Ativas", v: strategies.filter(s => s.ativo).length, c: T.accent },
             { l: "Total Trades",       v: activePositions.length + activeClosed.length, c: T.blue   },
             { l: "Win Rate",           v: winRate !== null ? `${winRate.toFixed(0)}%` : "—",   c: T.gold  },
@@ -3998,6 +4028,34 @@ JSON: {"signals":[{"id":"btc","sinal":"COMPRAR|VENDER|AGUARDAR","razao":"1 frase
           <div style={{ fontSize: 11, color: T.muted, lineHeight: 1.6 }}>A tua posição consolidada: saldo real nos brokers, valor por plano DCA e por fonte de trading. Todos os P&L são líquidos de comissões.</div>
         </Glass>
 
+        {/* Gráfico de evolução da carteira (dados reais guardados pelo bot) */}
+        {portfolioHist.length >= 2 ? (
+          <Glass style={{ padding: "20px 24px" }}>
+            <div style={{ fontSize: 14, fontWeight: 800, marginBottom: 4 }}>📈 Evolução da carteira</div>
+            <div style={{ fontSize: 10, color: T.muted, marginBottom: 14 }}>Valor total ao longo do tempo (um ponto por dia). A linha tracejada é o que investiste.</div>
+            <ResponsiveContainer width="100%" height={200}>
+              <AreaChart data={portfolioHist.map(p => ({ ...p, dLabel: new Date(p.ts).toLocaleDateString("pt-PT", { day: "2-digit", month: "2-digit" }) }))} margin={{ top: 6, right: 6, bottom: 4, left: 0 }}>
+                <defs>
+                  <linearGradient id="gPort" x1="0" y1="0" x2="0" y2="1">
+                    <stop offset="0%" stopColor={T.green} stopOpacity={0.4} />
+                    <stop offset="100%" stopColor={T.green} stopOpacity={0} />
+                  </linearGradient>
+                </defs>
+                <XAxis dataKey="dLabel" tick={{ fontSize: 9, fill: T.muted }} tickLine={false} axisLine={false} minTickGap={30} />
+                <YAxis tick={{ fontSize: 9, fill: T.muted }} tickLine={false} axisLine={false} width={44} domain={["auto", "auto"]} />
+                <Tooltip contentStyle={{ background: T.base, border: `1px solid ${T.border}`, borderRadius: 8, fontSize: 11 }} labelStyle={{ color: T.muted }} formatter={(v, n) => [`€${Number(v).toFixed(2)}`, n === "v" ? "Valor" : "Investido"]} />
+                <Area type="monotone" dataKey="v" stroke={T.green} strokeWidth={2} fill="url(#gPort)" />
+                <Area type="monotone" dataKey="inv" stroke={T.muted} strokeWidth={1} strokeDasharray="4 4" fill="none" />
+              </AreaChart>
+            </ResponsiveContainer>
+          </Glass>
+        ) : (
+          <Glass style={{ padding: "18px 24px" }}>
+            <div style={{ fontSize: 14, fontWeight: 800, marginBottom: 4 }}>📈 Evolução da carteira</div>
+            <div style={{ fontSize: 10.5, color: T.muted, lineHeight: 1.6 }}>O gráfico aparece aqui a partir de amanhã. O bot guarda um ponto do valor da tua carteira por dia — precisa de pelo menos 2 dias para desenhar a linha. Vai ficando mais rico com o tempo.</div>
+          </Glass>
+        )}
+
         {/* Saldo real por broker */}
         <Glass style={{ padding: "20px 24px" }}>
           <div style={{ fontSize: 14, fontWeight: 800, marginBottom: 14 }}>🏦 Contas nos brokers</div>
@@ -4171,6 +4229,8 @@ JSON: {"signals":[{"id":"btc","sinal":"COMPRAR|VENDER|AGUARDAR","razao":"1 frase
   const PlanoDCA = () => {
     const s = liveSettings;
     const docKey = botModoReal ? "realSettings" : "paperSettings";
+    // Acordeão: qual plano está expandido (só um de cada vez). null = todos fechados.
+    const [planoAberto, setPlanoAberto] = useState(null);
     const salvar = (patch, msg) => {
       const novo = { ...liveSettings, ...patch };
       if (user) import("./firebase.js").then(({ saveSetting }) => saveSetting(user.uid, docKey, novo).catch(() => {}));
@@ -4397,12 +4457,32 @@ JSON: {"signals":[{"id":"btc","sinal":"COMPRAR|VENDER|AGUARDAR","razao":"1 frase
           const diasAtivo = p.dataInicio ? Math.floor((Date.now() - p.dataInicio) / 86400000) : null;
           // Valor já investido neste plano (soma das posições DCA deste plano).
           const investidoPlano = positions.filter(x => (x.status === "ABERTA" || !x.status) && x.stratId === "dca" && (x.planId || "principal") === p.id).reduce((a, x) => a + (x.amount || 0), 0);
+          // P&L atual do plano (para mostrar no cabeçalho compacto).
+          const valorPlanoAtual = positions.filter(x => (x.status === "ABERTA" || !x.status) && x.stratId === "dca" && (x.planId || "principal") === p.id).reduce((a, x) => { const px = assets.find(z => z.id === x.assetId); return a + (px ? x.units * px.price : (x.amount || 0)); }, 0);
+          const plPlano = valorPlanoAtual - investidoPlano;
+          const aberto = planoAberto === p.id;
           return (
-            <Glass key={p.id} style={{ padding: "18px 22px" }}>
+            <Glass key={p.id} style={{ padding: aberto ? "18px 22px" : "14px 18px" }}>
+              {/* Cabeçalho clicável (acordeão) */}
+              <div onClick={() => setPlanoAberto(aberto ? null : p.id)} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 10, cursor: "pointer" }}>
+                <div style={{ display: "flex", alignItems: "center", gap: 10, flex: 1, minWidth: 0 }}>
+                  <span style={{ fontSize: 12, color: T.muted, transform: aberto ? "rotate(90deg)" : "none", transition: "transform 0.2s" }}>▶</span>
+                  <span style={{ fontSize: 14, fontWeight: 800, color: "#fff", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{p.nome}</span>
+                  <span style={{ fontSize: 9.5, color: T.muted, background: "rgba(255,255,255,0.05)", padding: "2px 7px", borderRadius: 5, whiteSpace: "nowrap" }}>{(p.carteira || []).length} ativos · {p.frequencia}</span>
+                </div>
+                <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
+                  {investidoPlano > 0 && (
+                    <span style={{ fontSize: 11, fontWeight: 800, color: plPlano >= 0 ? T.green : T.red }}>{plPlano >= 0 ? "+" : ""}€{plPlano.toFixed(2)}</span>
+                  )}
+                  <span style={{ fontSize: 11, fontWeight: 700, color: T.green, whiteSpace: "nowrap" }}>€{(planosEur[p.id]||0).toFixed(0)}/per</span>
+                </div>
+              </div>
+
+              {/* Conteúdo detalhado — só quando expandido */}
+              {aberto && (<div style={{ marginTop: 14 }}>
               <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 12, gap: 10 }}>
                 <input value={p.nome} onChange={(e) => updPlano(p.id, { nome: e.target.value })}
-                  style={{ flex: 1, padding: "6px 10px", borderRadius: 6, border: `1px solid transparent`, background: "transparent", color: T.aLight, fontSize: 14, fontWeight: 800 }} />
-                <div style={{ fontSize: 11, fontWeight: 700, color: T.green }}>€{(planosEur[p.id]||0).toFixed(0)}/período</div>
+                  style={{ flex: 1, padding: "6px 10px", borderRadius: 6, border: `1px solid ${T.border}`, background: "rgba(0,0,0,0.2)", color: T.aLight, fontSize: 13, fontWeight: 700 }} />
                 <button onClick={() => delPlano(p.id)} style={{ border: "none", background: "none", color: T.red, cursor: "pointer", fontSize: 18 }}>×</button>
               </div>
 
@@ -4815,6 +4895,7 @@ JSON: {"signals":[{"id":"btc","sinal":"COMPRAR|VENDER|AGUARDAR","razao":"1 frase
                   </div>
                 );
               })()}
+              </div>)}
             </Glass>
           );
         })}
@@ -5567,7 +5648,8 @@ JSON: {"signals":[{"id":"btc","sinal":"COMPRAR|VENDER|AGUARDAR","razao":"1 frase
                       <td style={{ padding: "9px 10px", color: T.muted, maxWidth: 110, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{t.strategy}</td>
                       <td style={{ padding: "9px 10px" }}>
                         <span style={{ fontSize: 10, color: T.aLight, fontWeight: 600, whiteSpace: "nowrap" }}>
-                          {t.stratId === "manual"     ? "✋ Manual"
+                          {t.stratId === "dca"        ? (t.planNome ? `🎯 DCA · ${t.planNome}` : "🎯 DCA")
+                            : t.stratId === "manual"     ? "✋ Manual"
                             : t.stratId === "ai-brain"   ? "🤖 AI Brain"
                             : t.stratId === "daytrading" ? "⚡ Day Trading"
                             : "🎯 Estratégia"}
@@ -7940,6 +8022,9 @@ JSON puro:
       });
       subSet(uid2, "dcaAportes", (val) => {
         if (val && typeof val === "object") setDcaAportes(val);
+      });
+      subSet(uid2, "portfolioHistory", (val) => {
+        if (Array.isArray(val)) setPortfolioHist(val);
       });
       unsubSig = subSet(uid2, "marketSignals", (val) => {
         // Só usar os sinais do bot quando ele está ativo (senão a app gera os seus)
