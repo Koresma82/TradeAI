@@ -5001,7 +5001,10 @@ JSON: {"signals":[{"id":"btc","sinal":"COMPRAR|VENDER|AGUARDAR","razao":"1 frase
 
     const liveTrades = [...positions.map(p => {
       const a = findAsset(p);
-      return { ...p, curPnl: a ? (a.price - p.entryPrice) * p.units - roundTripFeeApp(p, p.amount) : 0, livePrice: a?.price, mode: "live" };
+      // Alinhado com o bot (sim-engine): base de custo = amount investido (não
+      // entryPrice*units, que diverge após consolidações). Sempre líquido de taxas.
+      const invBase = p.amount || (p.entryPrice * p.units);
+      return { ...p, curPnl: a ? (a.price * p.units - invBase - roundTripFeeApp(p, invBase)) : 0, livePrice: a?.price, mode: "live" };
     }), ...closed.map(t => ({...t, mode:"live"}))];
 
     const activeTrades = histTab === "sim" ? simTrades : liveTrades;
@@ -5746,7 +5749,7 @@ JSON: {"signals":[{"id":"btc","sinal":"COMPRAR|VENDER|AGUARDAR","razao":"1 frase
                         {pnl !== undefined && (
                           <div style={{ display: "flex", flexDirection: "column", gap: 1 }}>
                             <span style={{ color: pnl >= 0 ? T.green : T.red, fontWeight: 700 }}>{sign(pnl)}{eur(pnl)}</span>
-                            {t.amount ? (() => { const pct = (pnl / t.amount) * 100; return <span style={{ color: pct >= 0 ? T.green : T.red, fontWeight: 600, fontSize: 9 }}>{sign(pct)}{Math.abs(pct).toFixed(2)}%</span>; })() : null}
+                            {t.amount ? (() => { const pct = (pnl / t.amount) * 100; return <span style={{ color: pct >= 0 ? T.green : T.red, fontWeight: 600, fontSize: 9 }}>{sign(pct)}{Math.abs(pct).toFixed(2)}% <span style={{ color: T.muted, fontWeight: 400 }}>líq.</span></span>; })() : null}
                           </div>
                         )}
                       </td>
