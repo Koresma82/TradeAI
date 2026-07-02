@@ -6422,8 +6422,21 @@ pm2 save && pm2 startup`}</CodeBlock>
           </div>
         </Glass>
         )}
-
-        {/* ═══ GRUPO: TRADING ATIVO (AI BRAIN) ═══ */}
+        {defGrupo.geral && (
+          <div style={{ display: "flex", alignItems: "center", gap: 10, padding: "12px 18px", borderRadius: 12, background: T.card, border: `1px solid ${T.border}` }}>
+            <div style={{ flex: 1 }}>
+              <div style={{ fontSize: 11.5, fontWeight: 700 }}>🔗 Ligação ao bot</div>
+              <div style={{ fontSize: 9.5, color: T.muted, marginTop: 2 }}>Copia o teu UID para configurares o bot no servidor (Railway).</div>
+            </div>
+            <button onClick={() => {
+              navigator.clipboard?.writeText(user.uid);
+              toast(`UID copiado: ${user.uid}`, "success");
+            }} style={{
+              background: `${T.blue}12`, border: `1px solid ${T.blue}33`, borderRadius: 8,
+              padding: "10px 18px", fontSize: 11, color: T.blue, cursor: "pointer", fontFamily: "inherit", fontWeight: 700, whiteSpace: "nowrap",
+            }}>📋 Copiar UID</button>
+          </div>
+        )}
         <div onClick={() => setDefGrupo(g => ({ ...g, ai: !g.ai }))} style={{ display: "flex", alignItems: "center", gap: 12, padding: "14px 18px", cursor: "pointer", background: defGrupo.ai ? `${T.gold}0c` : T.card, border: `1px solid ${defGrupo.ai ? T.gold + "44" : T.border}`, borderRadius: 14 }}>
           <span style={{ fontSize: 20 }}>⚡</span>
           <div style={{ flex: 1 }}>
@@ -6964,13 +6977,6 @@ pm2 save && pm2 startup`}</CodeBlock>
         <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
           <div style={{ display: "flex", gap: 12, justifyContent: "space-between", alignItems: "center" }}>
           {/* Limpar simulações */}
-          <button onClick={() => {
-            navigator.clipboard?.writeText(user.uid);
-            toast(`UID copiado: ${user.uid}`, "success");
-          }} style={{
-            background: `${T.blue}12`, border: `1px solid ${T.blue}33`, borderRadius: 8,
-            padding: "10px 18px", fontSize: 11, color: T.blue, cursor: "pointer", fontFamily: "inherit", fontWeight: 700,
-          }}>📋 Copiar UID (para o bot)</button>
           {simMode && (
           <button onClick={() => setConfirmModal({
             danger: true,
