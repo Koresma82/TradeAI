@@ -6464,6 +6464,68 @@ pm2 save && pm2 startup`}</CodeBlock>
             </button>
           </div>
         )}
+        {/* ── AI Brain (mestre) + fontes — no topo do grupo, é a chave de tudo ── */}
+        {!isSimTab && (() => {
+          const setFlag = (key, v) => {
+            const novo = { ...currentSettings, [key]: v };
+            setCurrentSettings(novo);
+            if (user) import("./firebase.js").then(({ saveSetting }) => saveSetting(user.uid, docKey, novo).catch(() => {}));
+          };
+          const mestre = !!currentSettings.aiBrainMestre;
+          const Toggle = ({ on, onClick, disabled, cor }) => (
+            <div onClick={() => !disabled && onClick()} style={{ cursor: disabled ? "not-allowed" : "pointer", flexShrink: 0, opacity: disabled ? 0.4 : 1 }}>
+              <div style={{ width: 44, height: 24, borderRadius: 12, background: on ? (cor || T.gold) : "rgba(255,255,255,0.1)", position: "relative", transition: "all 0.2s" }}>
+                <div style={{ position: "absolute", top: 3, left: on ? 22 : 2, width: 18, height: 18, borderRadius: "50%", background: "#fff", transition: "left 0.2s" }} />
+              </div>
+            </div>
+          );
+          const fontes = [
+            { key: "aiEstrategias",    icon: "📊", nome: "Estratégias",       desc: "As tuas estratégias compram/vendem sozinhas, com os SL/TP do perfil." },
+            { key: "aiManualAutonomo", icon: "🤖", nome: "Compras autónomas",  desc: "O Cérebro AI decide e compra sozinho, nos sinais de alta confiança." },
+            { key: "aiDayTrading",     icon: "⚡", nome: "Day Trading",        desc: "Scalping rápido com IA, usando os SL/TP que definires abaixo." },
+          ];
+          return (
+            <div style={{ padding: "18px 20px", borderRadius: 12, border: `1px solid ${mestre ? T.gold + "44" : T.border}`, background: mestre ? `${T.gold}08` : T.card }}>
+              <div style={{ fontSize: 10.5, color: T.muted, lineHeight: 1.6, marginBottom: 16 }}>
+                O <b>AI Brain</b> é a chave-mestra: liga-o para desbloquear as fontes de trading ativo. Cada fonte corre em paralelo com o DCA, numa fatia separada do capital. Com o AI Brain desligado, só o DCA passivo funciona.
+              </div>
+              {/* Mestre */}
+              <div style={{ display: "flex", alignItems: "center", gap: 12, padding: "12px 14px", borderRadius: 8, background: `${T.gold}0c`, border: `1px solid ${T.gold}33`, marginBottom: 14 }}>
+                <span style={{ fontSize: 20 }}>🧠</span>
+                <div style={{ flex: 1 }}>
+                  <div style={{ fontSize: 12.5, fontWeight: 800 }}>AI Brain (mestre)</div>
+                  <div style={{ fontSize: 10, color: T.muted, lineHeight: 1.4 }}>Desbloqueia o trading ativo. Desligado = só DCA.</div>
+                </div>
+                <Toggle on={mestre} onClick={() => { const v = !mestre; setFlag("aiBrainMestre", v); toast(v ? "🧠 AI Brain ligado — fontes desbloqueadas" : "💤 AI Brain desligado — só DCA", v ? "info" : "success"); }} />
+              </div>
+              {/* Sub-fontes (só disponíveis com o mestre on) */}
+              <div style={{ display: "flex", flexDirection: "column", gap: 10, opacity: mestre ? 1 : 0.5 }}>
+                {fontes.map(f => (
+                  <div key={f.key} style={{ display: "flex", alignItems: "center", gap: 12, padding: "10px 0", borderTop: `1px solid ${T.border}` }}>
+                    <span style={{ fontSize: 17 }}>{f.icon}</span>
+                    <div style={{ flex: 1 }}>
+                      <div style={{ fontSize: 12, fontWeight: 700 }}>{f.nome}</div>
+                      <div style={{ fontSize: 9.5, color: T.muted, lineHeight: 1.4 }}>{f.desc}</div>
+                    </div>
+                    <Toggle on={mestre && !!currentSettings[f.key]} disabled={!mestre} onClick={() => setFlag(f.key, !currentSettings[f.key])} />
+                  </div>
+                ))}
+                {/* Sugestão a pedido — independente, não executa nada */}
+                <div style={{ display: "flex", alignItems: "center", gap: 12, padding: "10px 0", borderTop: `1px solid ${T.border}` }}>
+                  <span style={{ fontSize: 17 }}>💡</span>
+                  <div style={{ flex: 1 }}>
+                    <div style={{ fontSize: 12, fontWeight: 700 }}>Sugestão da IA a pedido</div>
+                    <div style={{ fontSize: 9.5, color: T.muted, lineHeight: 1.4 }}>A IA dá opinião quando TU pedes, antes de comprares. Não executa nada. Funciona mesmo sem o AI Brain.</div>
+                  </div>
+                  <Toggle on={!!currentSettings.aiManualSugestao} cor={T.blue} onClick={() => setFlag("aiManualSugestao", !currentSettings.aiManualSugestao)} />
+                </div>
+              </div>
+              {!mestre && (
+                <div style={{ fontSize: 9.5, color: T.muted, marginTop: 12, fontStyle: "italic" }}>Liga o AI Brain acima para poderes activar estas fontes.</div>
+              )}
+            </div>
+          );
+        })()}
         <Glass style={{ padding: "22px 24px" }}>
           <div style={{ fontSize: 13, fontWeight: 700, color: T.aLight, marginBottom: 16 }}>🎯 Perfil de Risco</div>
           <div className="resp-grid" style={{ display: "grid", gridTemplateColumns: "repeat(3,1fr)", gap: 10, marginBottom: 16 }}>
@@ -7078,76 +7140,7 @@ pm2 save && pm2 startup`}</CodeBlock>
           </>)}
           {/* ═══ FIM GRUPO DCA ═══ */}
 
-          {/* ═══ GRUPO: AI BRAIN (mestre + fontes) — parte do Trading Ativo ═══ */}
-          {defGrupo.ai && (
-          <>
-          {/* ── Trading Ativo: AI Brain (mestre) + fontes (opção C) ── */}
-          {!isSimTab && (() => {
-            const setFlag = (key, v) => {
-              const novo = { ...currentSettings, [key]: v };
-              setCurrentSettings(novo);
-              if (user) import("./firebase.js").then(({ saveSetting }) => saveSetting(user.uid, docKey, novo).catch(() => {}));
-            };
-            const mestre = !!currentSettings.aiBrainMestre;
-            const Toggle = ({ on, onClick, disabled, cor }) => (
-              <div onClick={() => !disabled && onClick()} style={{ cursor: disabled ? "not-allowed" : "pointer", flexShrink: 0, opacity: disabled ? 0.4 : 1 }}>
-                <div style={{ width: 44, height: 24, borderRadius: 12, background: on ? (cor || T.gold) : "rgba(255,255,255,0.1)", position: "relative", transition: "all 0.2s" }}>
-                  <div style={{ position: "absolute", top: 3, left: on ? 22 : 2, width: 18, height: 18, borderRadius: "50%", background: "#fff", transition: "left 0.2s" }} />
-                </div>
-              </div>
-            );
-            const fontes = [
-              { key: "aiEstrategias",    icon: "📊", nome: "Estratégias",       desc: "As tuas estratégias compram/vendem sozinhas, com os SL/TP do perfil." },
-              { key: "aiManualAutonomo", icon: "🤖", nome: "Compras autónomas",  desc: "O Cérebro AI decide e compra sozinho, nos sinais de alta confiança." },
-              { key: "aiDayTrading",     icon: "⚡", nome: "Day Trading",        desc: "Scalping rápido com IA, usando os SL/TP que definires abaixo." },
-            ];
-            return (
-              <div style={{ marginTop: 8, padding: "18px 20px", borderRadius: 10, border: `1px solid ${mestre ? T.gold + "44" : T.border}`, background: mestre ? `${T.gold}08` : "transparent" }}>
-                <div style={{ fontSize: 13, fontWeight: 800, marginBottom: 4 }}>⚡ Trading Ativo (opcional)</div>
-                <div style={{ fontSize: 10.5, color: T.muted, lineHeight: 1.6, marginBottom: 16 }}>
-                  O <b>AI Brain</b> é a chave-mestra: liga-o para desbloquear as fontes de trading ativo. Cada fonte corre em paralelo com o DCA, numa fatia separada do capital. Com o AI Brain desligado, só o DCA passivo funciona.
-                </div>
-
-                {/* Mestre */}
-                <div style={{ display: "flex", alignItems: "center", gap: 12, padding: "12px 14px", borderRadius: 8, background: `${T.gold}0c`, border: `1px solid ${T.gold}33`, marginBottom: 14 }}>
-                  <span style={{ fontSize: 20 }}>🧠</span>
-                  <div style={{ flex: 1 }}>
-                    <div style={{ fontSize: 12.5, fontWeight: 800 }}>AI Brain (mestre)</div>
-                    <div style={{ fontSize: 10, color: T.muted, lineHeight: 1.4 }}>Desbloqueia o trading ativo. Desligado = só DCA.</div>
-                  </div>
-                  <Toggle on={mestre} onClick={() => { const v = !mestre; setFlag("aiBrainMestre", v); toast(v ? "🧠 AI Brain ligado — fontes desbloqueadas" : "💤 AI Brain desligado — só DCA", v ? "info" : "success"); }} />
-                </div>
-
-                {/* Sub-fontes (só disponíveis com o mestre on) */}
-                <div style={{ display: "flex", flexDirection: "column", gap: 10, opacity: mestre ? 1 : 0.5 }}>
-                  {fontes.map(f => (
-                    <div key={f.key} style={{ display: "flex", alignItems: "center", gap: 12, padding: "10px 0", borderTop: `1px solid ${T.border}` }}>
-                      <span style={{ fontSize: 17 }}>{f.icon}</span>
-                      <div style={{ flex: 1 }}>
-                        <div style={{ fontSize: 12, fontWeight: 700 }}>{f.nome}</div>
-                        <div style={{ fontSize: 9.5, color: T.muted, lineHeight: 1.4 }}>{f.desc}</div>
-                      </div>
-                      <Toggle on={mestre && !!currentSettings[f.key]} disabled={!mestre} onClick={() => setFlag(f.key, !currentSettings[f.key])} />
-                    </div>
-                  ))}
-                  {/* Sugestão a pedido — independente, não executa nada */}
-                  <div style={{ display: "flex", alignItems: "center", gap: 12, padding: "10px 0", borderTop: `1px solid ${T.border}` }}>
-                    <span style={{ fontSize: 17 }}>💡</span>
-                    <div style={{ flex: 1 }}>
-                      <div style={{ fontSize: 12, fontWeight: 700 }}>Sugestão da IA a pedido</div>
-                      <div style={{ fontSize: 9.5, color: T.muted, lineHeight: 1.4 }}>A IA dá opinião quando TU pedes, antes de comprares. Não executa nada. Funciona mesmo sem o AI Brain.</div>
-                    </div>
-                    <Toggle on={!!currentSettings.aiManualSugestao} cor={T.blue} onClick={() => setFlag("aiManualSugestao", !currentSettings.aiManualSugestao)} />
-                  </div>
-                </div>
-                {!mestre && (
-                  <div style={{ fontSize: 9.5, color: T.muted, marginTop: 12, fontStyle: "italic" }}>Liga o AI Brain acima para poderes activar estas fontes.</div>
-                )}
-              </div>
-            );
-          })()}
-          </>)}
-          {/* ═══ FIM GRUPO AI BRAIN ═══ */}
+          {/* (bloco AI Brain mestre movido para o topo do grupo Trading Ativo) */}
 
           {/* ═══ GRUPO: ZONA DE PERIGO ═══ */}
           <div onClick={() => setDefGrupo(g => ({ ...g, perigo: !g.perigo }))} style={{ display: "flex", alignItems: "center", gap: 12, padding: "14px 18px", cursor: "pointer", background: defGrupo.perigo ? `${T.red}0c` : T.card, border: `1px solid ${defGrupo.perigo ? T.red + "44" : T.border}`, borderRadius: 14 }}>
