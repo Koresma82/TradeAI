@@ -217,6 +217,26 @@ function Glass({ children, style = {}, glow, onClick }) {
   );
 }
 
+// Grupo colapsável das Definições: cabeçalho clicável + descrição + conteúdo.
+// aberto/onToggle vêm do estado do componente principal (não usa hooks aqui).
+function SettingsGroup({ titulo, desc, icon, cor = T.accent, aberto, onToggle, children }) {
+  return (
+    <div style={{ background: T.card, border: `1px solid ${aberto ? cor + "44" : T.border}`, borderRadius: 16, overflow: "hidden", transition: "border-color 0.2s" }}>
+      <div onClick={onToggle} style={{ display: "flex", alignItems: "center", gap: 12, padding: "16px 20px", cursor: "pointer", background: aberto ? `${cor}0c` : "transparent" }}>
+        <span style={{ fontSize: 20 }}>{icon}</span>
+        <div style={{ flex: 1, minWidth: 0 }}>
+          <div style={{ fontSize: 14, fontWeight: 800, color: "#fff" }}>{titulo}</div>
+          {desc && <div style={{ fontSize: 10.5, color: T.muted, marginTop: 2, lineHeight: 1.4 }}>{desc}</div>}
+        </div>
+        <span style={{ fontSize: 13, color: T.muted, transform: aberto ? "rotate(90deg)" : "none", transition: "transform 0.2s" }}>▶</span>
+      </div>
+      {aberto && <div style={{ padding: "4px 20px 20px", display: "flex", flexDirection: "column", gap: 16 }}>{children}</div>}
+    </div>
+  );
+}
+
+
+
 function Badge({ label, color = T.accent }) {
   return (
     <span style={{
@@ -687,6 +707,9 @@ export default function TradeAI() {
   const [manualOrders, setManualOrders] = useState([]); // ordens DCA manuais pendentes
   const [dcaAportes, setDcaAportes] = useState({}); // contabilidade de aportes confirmados por plano
   const [planoAberto, setPlanoAberto] = useState(null); // acordeão dos planos DCA (estado no topo p/ não violar regras de hooks)
+  // Grupos colapsáveis das Definições. DCA aberto por defeito (é o núcleo);
+  // Trading Ativo fechado (só interessa se usares o AI Brain).
+  const [defGrupo, setDefGrupo] = useState({ geral: true, dca: true, ai: false, perigo: false });
   const [portfolioHist, setPortfolioHist] = useState([]); // pontos diários do valor da carteira
   const [closed, setClosed]       = useState([]);
   const [strategies, setStrategies] = useState([]);
@@ -6326,7 +6349,18 @@ pm2 save && pm2 startup`}</CodeBlock>
           </div>
         )}
 
+        {/* ═══ GRUPO: GERAL ═══ */}
+        <div onClick={() => setDefGrupo(g => ({ ...g, geral: !g.geral }))} style={{ display: "flex", alignItems: "center", gap: 12, padding: "14px 18px", cursor: "pointer", background: defGrupo.geral ? `${T.accent}0c` : T.card, border: `1px solid ${defGrupo.geral ? T.accent + "44" : T.border}`, borderRadius: 14 }}>
+          <span style={{ fontSize: 20 }}>⚙️</span>
+          <div style={{ flex: 1 }}>
+            <div style={{ fontSize: 14, fontWeight: 800, color: "#fff" }}>Geral</div>
+            <div style={{ fontSize: 10.5, color: T.muted, marginTop: 2 }}>O capital total e quanto o bot investe por cada trade. A base de tudo.</div>
+          </div>
+          <span style={{ fontSize: 13, color: T.muted, transform: defGrupo.geral ? "rotate(90deg)" : "none", transition: "transform 0.2s" }}>▶</span>
+        </div>
+
         {/* Capital */}
+        {defGrupo.geral && (
         <Glass style={{ padding: "22px 24px" }}>
           <div style={{ fontSize: 13, fontWeight: 700, color: T.aLight, marginBottom: 16 }}>💰 Capital e Valor por Trade</div>
           <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 20, marginBottom: 18 }}>
@@ -6387,8 +6421,49 @@ pm2 save && pm2 startup`}</CodeBlock>
             </div>
           </div>
         </Glass>
+        )}
+
+        {/* ═══ GRUPO: TRADING ATIVO (AI BRAIN) ═══ */}
+        <div onClick={() => setDefGrupo(g => ({ ...g, ai: !g.ai }))} style={{ display: "flex", alignItems: "center", gap: 12, padding: "14px 18px", cursor: "pointer", background: defGrupo.ai ? `${T.gold}0c` : T.card, border: `1px solid ${defGrupo.ai ? T.gold + "44" : T.border}`, borderRadius: 14 }}>
+          <span style={{ fontSize: 20 }}>⚡</span>
+          <div style={{ flex: 1 }}>
+            <div style={{ fontSize: 14, fontWeight: 800, color: "#fff" }}>Trading Ativo (AI Brain)</div>
+            <div style={{ fontSize: 10.5, color: T.muted, marginTop: 2 }}>Tudo o que controla o trading ativo com IA: perfil de risco, ajustes, limites e automação. Só afeta o sistema se ligares o AI Brain lá dentro. Se só usas DCA, podes ignorar este grupo.</div>
+          </div>
+          <span style={{ fontSize: 13, color: T.muted, transform: defGrupo.ai ? "rotate(90deg)" : "none", transition: "transform 0.2s" }}>▶</span>
+        </div>
 
         {/* Perfil de risco */}
+        {defGrupo.ai && (<>
+        {/* Botão: aplicar configuração recomendada do AI Brain (começar seguro) */}
+        {!isSimTab && (
+          <div style={{ background: `${T.green}0c`, border: `1px solid ${T.green}33`, borderRadius: 12, padding: "14px 18px", display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12, flexWrap: "wrap" }}>
+            <div style={{ flex: 1, minWidth: 200 }}>
+              <div style={{ fontSize: 12.5, fontWeight: 800, color: T.green }}>✨ Configuração recomendada</div>
+              <div style={{ fontSize: 10, color: T.muted, marginTop: 3, lineHeight: 1.5 }}>Aplica valores seguros para começar: perfil Moderado, confiança 82%, trailing e take-profit parcial ligados, posições pequenas. Podes afinar depois.</div>
+            </div>
+            <button onClick={() => setConfirmModal({
+              title: "Aplicar configuração recomendada?",
+              message: "Vai definir os parâmetros do AI Brain para valores seguros de arranque:",
+              lines: ["Perfil Moderado (SL 6% · TP 12%)", "Confiança mínima 82%", "Trailing Stop 4% ligado", "Take-profit parcial 60% ligado", "Máx. 3 posições AI · €50/trade", "Modo dinâmico ligado", "Análise a cada 15 min"],
+              icon: "✨", confirmLabel: "Aplicar",
+              onConfirm: () => {
+                setLocal(prev => ({ ...(prev || currentSettings),
+                  riscoPerfil: "moderado", stopLossPadrao: 6, takeProfitPadrao: 12,
+                  aiBrainConfianca: 82, trailingStop: true, trailingStopPct: 4,
+                  aiExitOnFlip: true, scaleOutTP: true, scaleOutPct: 60,
+                  maxAiBrain: 3, maxValorTrade: 50, maxPosicoesTotal: 40,
+                  regimeDinamico: true, rotacaoAtiva: false, aiSignalsMin: 15,
+                  aiManualSugestao: true,
+                }));
+                setConfirmModal(null);
+                toast("✨ Configuração recomendada aplicada — revê e carrega em Guardar", "success");
+              },
+            })} style={{ background: T.gradGreen, border: "none", borderRadius: 10, padding: "11px 20px", fontSize: 12, fontWeight: 800, color: "#04120c", cursor: "pointer", fontFamily: "inherit", whiteSpace: "nowrap" }}>
+              ✨ Aplicar recomendada
+            </button>
+          </div>
+        )}
         <Glass style={{ padding: "22px 24px" }}>
           <div style={{ fontSize: 13, fontWeight: 700, color: T.aLight, marginBottom: 16 }}>🎯 Perfil de Risco</div>
           <div className="resp-grid" style={{ display: "grid", gridTemplateColumns: "repeat(3,1fr)", gap: 10, marginBottom: 16 }}>
@@ -6822,6 +6897,8 @@ pm2 save && pm2 startup`}</CodeBlock>
             </div>
           </div>
         </Glass>
+        </>)}
+        {/* ═══ FIM GRUPO AI ═══ */}
         <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
           <div style={{ display: "flex", gap: 12, justifyContent: "space-between", alignItems: "center" }}>
           {/* Limpar simulações */}
@@ -6874,6 +6951,17 @@ pm2 save && pm2 startup`}</CodeBlock>
           }}>🗑 Limpar Simulações</button>
           )}
           </div>
+
+          {/* ═══ GRUPO: DCA ═══ */}
+          <div onClick={() => setDefGrupo(g => ({ ...g, dca: !g.dca }))} style={{ display: "flex", alignItems: "center", gap: 12, padding: "14px 18px", cursor: "pointer", background: defGrupo.dca ? `${T.green}0c` : T.card, border: `1px solid ${defGrupo.dca ? T.green + "44" : T.border}`, borderRadius: 14 }}>
+            <span style={{ fontSize: 20 }}>🎯</span>
+            <div style={{ flex: 1 }}>
+              <div style={{ fontSize: 14, fontWeight: 800, color: "#fff" }}>DCA — o teu núcleo</div>
+              <div style={{ fontSize: 10.5, color: T.muted, marginTop: 2 }}>As compras regulares e automáticas dos teus planos. O travão de emergência, as notificações e o modo férias. É a parte que estás a usar.</div>
+            </div>
+            <span style={{ fontSize: 13, color: T.muted, transform: defGrupo.dca ? "rotate(90deg)" : "none", transition: "transform 0.2s" }}>▶</span>
+          </div>
+          {defGrupo.dca && (<>
           {/* ── DCA: travão de emergência (desligar o núcleo passivo) ── */}
           {!isSimTab && (() => {
             const setDca = (v) => {
@@ -6987,7 +7075,12 @@ pm2 save && pm2 startup`}</CodeBlock>
               </div>
             );
           })()}
+          </>)}
+          {/* ═══ FIM GRUPO DCA ═══ */}
 
+          {/* ═══ GRUPO: AI BRAIN (mestre + fontes) — parte do Trading Ativo ═══ */}
+          {defGrupo.ai && (
+          <>
           {/* ── Trading Ativo: AI Brain (mestre) + fontes (opção C) ── */}
           {!isSimTab && (() => {
             const setFlag = (key, v) => {
@@ -7053,6 +7146,19 @@ pm2 save && pm2 startup`}</CodeBlock>
               </div>
             );
           })()}
+          </>)}
+          {/* ═══ FIM GRUPO AI BRAIN ═══ */}
+
+          {/* ═══ GRUPO: ZONA DE PERIGO ═══ */}
+          <div onClick={() => setDefGrupo(g => ({ ...g, perigo: !g.perigo }))} style={{ display: "flex", alignItems: "center", gap: 12, padding: "14px 18px", cursor: "pointer", background: defGrupo.perigo ? `${T.red}0c` : T.card, border: `1px solid ${defGrupo.perigo ? T.red + "44" : T.border}`, borderRadius: 14 }}>
+            <span style={{ fontSize: 20 }}>⚠️</span>
+            <div style={{ flex: 1 }}>
+              <div style={{ fontSize: 14, fontWeight: 800, color: "#fff" }}>Zona de perigo</div>
+              <div style={{ fontSize: 10.5, color: T.muted, marginTop: 2 }}>Recomeçar do zero: apaga trades, posições e histórico. Ações permanentes.</div>
+            </div>
+            <span style={{ fontSize: 13, color: T.muted, transform: defGrupo.perigo ? "rotate(90deg)" : "none", transition: "transform 0.2s" }}>▶</span>
+          </div>
+          {defGrupo.perigo && (<>
           {/* ── Zona de perigo: recomeço de raiz (limpa a BD no servidor) ── */}
           {!isSimTab && (
             <div style={{ marginTop: 8, padding: "16px 18px", borderRadius: 10, border: `1px solid ${T.red}33`, background: `${T.red}08` }}>
@@ -7090,6 +7196,8 @@ pm2 save && pm2 startup`}</CodeBlock>
               }}>🧹 Limpar tudo e recomeçar</button>
             </div>
           )}
+          </>)}
+          {/* ═══ FIM GRUPO PERIGO ═══ */}
           <div style={{ display: "flex", gap: 10 }}>
             <Btn color={T.muted} onClick={() => setSettingsLocal(null)}>Cancelar</Btn>
             <Btn color={T.green} solid onClick={save} style={{ padding: "11px 32px", fontSize: 14 }}>✓ Guardar</Btn>
