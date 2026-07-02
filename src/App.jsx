@@ -710,6 +710,8 @@ export default function TradeAI() {
   // Grupos colapsáveis das Definições. DCA aberto por defeito (é o núcleo);
   // Trading Ativo fechado (só interessa se usares o AI Brain).
   const [defGrupo, setDefGrupo] = useState({ geral: true, dca: true, ai: false, perigo: false });
+  // Colunas opcionais da tabela de histórico (o utilizador liga/desliga).
+  const [colsVisiveis, setColsVisiveis] = useState({ abertura: true, investido: true, sltp: false, mercado: true, duracao: false });
   const [portfolioHist, setPortfolioHist] = useState([]); // pontos diários do valor da carteira
   const [closed, setClosed]       = useState([]);
   const [strategies, setStrategies] = useState([]);
@@ -2081,7 +2083,7 @@ JSON puro — inclui TODOS os ativos relevantes de TODAS as categorias:
                         />
                         <Area type="monotone" dataKey="v" stroke={col} strokeWidth={2} fill={`url(#dg${pos.id.slice(-4)})`} dot={false} />
                         <ReferenceLine y={pos.entryPrice} stroke={T.gold} strokeDasharray="5 3" strokeWidth={1.5}
-                          label={{ value: `Entrada $${pos.entryPrice.toFixed(0)}`, position: "insideTopLeft", fill: T.gold, fontSize: 9, fontWeight: 700 }} />
+                          label={{ value: `${pos.stratId === "dca" ? "🎯 DCA" : pos.stratId === "ai-brain" ? "🤖 AI Brain" : pos.stratId === "daytrading" ? "⚡ Day" : pos.stratId === "manual" ? "✋ Manual" : "🎯 Estratégia"} · entrada $${pos.entryPrice.toFixed(0)}`, position: "insideTopLeft", fill: T.gold, fontSize: 9, fontWeight: 700 }} />
                       </AreaChart>
                     </ResponsiveContainer>
                     <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr 1fr", gap: 6, marginTop: 8 }}>
@@ -3046,7 +3048,7 @@ JSON: {"signals":[{"id":"btc","sinal":"COMPRAR|VENDER|AGUARDAR","razao":"1 frase
                                 labelFormatter={() => ""}/>
                               <Area type="monotone" dataKey="v" stroke={col} strokeWidth={2.5} fill={`url(#pf${pos.id})`} dot={false}/>
                               <ReferenceLine y={pos.entryPrice} stroke={T.gold} strokeDasharray="6 3" strokeWidth={2}
-                                label={{ value:`Minha entrada $${pos.entryPrice.toFixed(a.id==="eurusd"?4:2)}`, position:"insideTopLeft", fill:T.gold, fontSize:10, fontWeight:700 }}/>
+                                label={{ value:`${pos.stratId === "dca" ? "🎯 DCA" : pos.stratId === "ai-brain" ? "🤖 AI Brain" : pos.stratId === "daytrading" ? "⚡ Day" : pos.stratId === "manual" ? "✋ Manual" : "🎯 Estratégia"} · entrada $${pos.entryPrice.toFixed(a.id==="eurusd"?4:2)}`, position:"insideTopLeft", fill:T.gold, fontSize:10, fontWeight:700 }}/>
                             </AreaChart>
                           </ResponsiveContainer>
                           {hoveredChart.current===pos.assetId && (
@@ -5638,26 +5640,63 @@ JSON: {"signals":[{"id":"btc","sinal":"COMPRAR|VENDER|AGUARDAR","razao":"1 frase
           </Glass>
         ) : (
           <Glass style={{ padding: "20px", overflowX: "auto" }}>
-            <SectionLabel>Trades — {histTab === "sim" ? "Simulação" : "Live"} · {histCat} ({filtered.length})</SectionLabel>
-            <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 11, minWidth: 1320 }}>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: 10, marginBottom: 12 }}>
+              <SectionLabel>Trades — {histTab === "sim" ? "Simulação" : "Live"} · {histCat} ({filtered.length})</SectionLabel>
+              <div style={{ display: "flex", gap: 6, flexWrap: "wrap", alignItems: "center" }}>
+                <span style={{ fontSize: 9, color: T.muted, textTransform: "uppercase", letterSpacing: "0.05em" }}>Colunas:</span>
+                {[
+                  { k: "abertura", l: "Abertura" },
+                  { k: "duracao", l: "Duração" },
+                  { k: "investido", l: "Investido" },
+                  { k: "sltp", l: "SL/TP" },
+                  { k: "mercado", l: "Mercado" },
+                ].map(c => (
+                  <button key={c.k} onClick={() => setColsVisiveis(v => ({ ...v, [c.k]: !v[c.k] }))}
+                    style={{ padding: "3px 9px", borderRadius: 6, fontSize: 9, fontWeight: 600, cursor: "pointer", fontFamily: "inherit",
+                      background: colsVisiveis[c.k] ? `${T.accent}1a` : "transparent",
+                      border: `1px solid ${colsVisiveis[c.k] ? T.accent : T.border}`,
+                      color: colsVisiveis[c.k] ? T.accent : T.muted }}>
+                    {colsVisiveis[c.k] ? "✓ " : ""}{c.l}
+                  </button>
+                ))}
+              </div>
+            </div>
+            <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 11, minWidth: 780 }}>
               <thead>
                 <tr style={{ borderBottom: `1px solid ${T.border}` }}>
-                  {["Ativo","Cat.","Estratégia","Origem","Abertura","Saída","Duração","Entrada","Preço Atual","Investido","SL","TP","P&L","%","IA","Hold","Status","Mercado"].map(h => {
-                    const key = colSortKey[h];
-                    const active = key && histSortKey === key;
-                    return (
-                      <th key={h}
-                        onClick={key ? () => toggleSort(key) : undefined}
-                        style={{
-                          padding: "8px 10px", textAlign: "left", fontSize: 8, letterSpacing: "0.1em",
-                          textTransform: "uppercase", fontWeight: 600, whiteSpace: "nowrap",
-                          color: active ? T.aLight : T.muted,
-                          cursor: key ? "pointer" : "default",
-                          userSelect: "none",
-                        }}>
-                        {h}{active ? (histSortDir === "asc" ? " ▲" : " ▼") : (key ? " ⇅" : "")}
-                      </th>
-                    );
+                  {(() => {
+                    // Colunas: essenciais sempre; opcionais conforme colsVisiveis.
+                    const cols = [
+                      { h: "Ativo", key: colSortKey["Ativo"], on: true },
+                      { h: "Origem", key: null, on: true },
+                      { h: "Abertura", key: colSortKey["Abertura"], on: colsVisiveis.abertura },
+                      { h: "Duração", key: colSortKey["Duração"], on: colsVisiveis.duracao },
+                      { h: "Entrada", key: colSortKey["Entrada"], on: true },
+                      { h: "Atual", key: colSortKey["Preço Atual"], on: true },
+                      { h: "Investido", key: colSortKey["Investido"], on: colsVisiveis.investido },
+                      { h: "SL/TP", key: null, on: colsVisiveis.sltp },
+                      { h: "P&L", key: colSortKey["P&L"], on: true },
+                      { h: "IA", key: null, on: true },
+                      { h: "Ação", key: null, on: true },
+                      { h: "Status", key: colSortKey["Status"], on: true },
+                      { h: "Mercado", key: null, on: colsVisiveis.mercado },
+                    ];
+                    return cols.filter(c => c.on).map(({ h, key }) => {
+                      const active = key && histSortKey === key;
+                      return (
+                        <th key={h}
+                          onClick={key ? () => toggleSort(key) : undefined}
+                          style={{
+                            padding: "8px 10px", textAlign: "left", fontSize: 8, letterSpacing: "0.1em",
+                            textTransform: "uppercase", fontWeight: 600, whiteSpace: "nowrap",
+                            color: active ? T.aLight : T.muted,
+                            cursor: key ? "pointer" : "default", userSelect: "none",
+                          }}>
+                          {h}{active ? (histSortDir === "asc" ? " ▲" : " ▼") : (key ? " ⇅" : "")}
+                        </th>
+                      );
+                    });
+                  })()}
                   })}
                 </tr>
               </thead>
@@ -5668,43 +5707,48 @@ JSON: {"signals":[{"id":"btc","sinal":"COMPRAR|VENDER|AGUARDAR","razao":"1 frase
                   const a      = findAsset(t);
                   return (
                     <tr key={t.id} style={{ borderBottom: `1px solid ${T.border}20` }}>
+                      {/* Ativo */}
                       <td style={{ padding: "9px 10px", fontWeight: 700 }}>{a?.icon || "◆"} {a?.sym || t.assetSym || t.assetId}</td>
-                      <td style={{ padding: "9px 10px", color: T.muted }}>{a?.cat || "—"}</td>
-                      <td style={{ padding: "9px 10px", color: T.muted, maxWidth: 110, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{t.strategy}</td>
-                      <td style={{ padding: "9px 10px" }}>
-                        <span style={{ fontSize: 10, color: T.aLight, fontWeight: 600, whiteSpace: "nowrap" }}>
+                      {/* Origem (junta origem + nome da estratégia) */}
+                      <td style={{ padding: "9px 10px", maxWidth: 150 }}>
+                        <div style={{ fontSize: 10, color: T.aLight, fontWeight: 600, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
                           {t.stratId === "dca"        ? (t.planNome ? `🎯 DCA · ${t.planNome}` : "🎯 DCA")
                             : t.stratId === "manual"     ? "✋ Manual"
                             : t.stratId === "ai-brain"   ? "🤖 AI Brain"
                             : t.stratId === "daytrading" ? "⚡ Day Trading"
                             : "🎯 Estratégia"}
-                        </span>
+                        </div>
+                        {t.strategy && t.stratId !== "dca" && <div style={{ fontSize: 8.5, color: T.muted, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{t.strategy}</div>}
                       </td>
-                      <td style={{ padding: "9px 10px", color: T.muted }}>{t.openedAt}</td>
-                      <td style={{ padding: "9px 10px", color: T.muted }}>{isOpen ? "—" : (t.closedAt || "—")}</td>
-                      <td style={{ padding: "9px 10px", color: T.muted, whiteSpace: "nowrap" }}>
+                      {/* Abertura (opcional) */}
+                      {colsVisiveis.abertura && <td style={{ padding: "9px 10px", color: T.muted, fontSize: 9.5 }}>{t.openedAt}{!isOpen && t.closedAt ? <div style={{ fontSize: 8, color: T.muted }}>→ {t.closedAt}</div> : null}</td>}
+                      {/* Duração (opcional) */}
+                      {colsVisiveis.duracao && <td style={{ padding: "9px 10px", color: T.muted, whiteSpace: "nowrap" }}>
                         {isOpen || !t.openedTs || !t.closedTs ? "—" : (() => {
                           const m = Math.round((t.closedTs - t.openedTs) / 60000);
                           if (m < 1)  return "<1min";
                           if (m < 60) return `${m}min`;
                           return `${Math.floor(m / 60)}h${String(m % 60).padStart(2, "0")}`;
                         })()}
-                      </td>
+                      </td>}
+                      {/* Entrada */}
                       <td style={{ padding: "9px 10px" }}>${t.entryPrice?.toFixed(2)}</td>
+                      {/* Preço atual */}
                       <td style={{ padding: "9px 10px" }}>{isOpen ? `$${t.livePrice ? fmt(t.livePrice, a?.id || t.assetId) : "—"}` : (Number.isFinite(+t.closePrice) ? `$${(+t.closePrice).toFixed(2)}` : "—")}</td>
-                      <td style={{ padding: "9px 10px" }}>€{t.amount}</td>
-                      <td style={{ padding: "9px 10px", color: T.red }}>${t.sl}</td>
-                      <td style={{ padding: "9px 10px", color: T.green }}>${t.tp}</td>
-                      <td style={{ padding: "9px 10px" }}>
-                        {pnl !== undefined && <span style={{ color: pnl >= 0 ? T.green : T.red, fontWeight: 700 }}>{sign(pnl)}{eur(pnl)}</span>}
-                      </td>
-                      <td style={{ padding: "9px 10px" }}>
-                        {(() => {
-                          // % de lucro sobre o investido
-                          if (pnl === undefined || !t.amount) return <span style={{ color: T.muted }}>—</span>;
-                          const pct = (pnl / t.amount) * 100;
-                          return <span style={{ color: pct >= 0 ? T.green : T.red, fontWeight: 700 }}>{sign(pct)}{Math.abs(pct).toFixed(2)}%</span>;
-                        })()}
+                      {/* Investido (opcional) */}
+                      {colsVisiveis.investido && <td style={{ padding: "9px 10px" }}>€{t.amount}</td>}
+                      {/* SL/TP (opcional, junto) */}
+                      {colsVisiveis.sltp && <td style={{ padding: "9px 10px", fontSize: 9.5, whiteSpace: "nowrap" }}>
+                        {t.stratId === "dca" ? <span style={{ color: T.muted }}>—</span> : <><span style={{ color: T.red }}>${t.sl}</span> <span style={{ color: T.muted }}>/</span> <span style={{ color: T.green }}>${t.tp}</span></>}
+                      </td>}
+                      {/* P&L + % juntos */}
+                      <td style={{ padding: "9px 10px", whiteSpace: "nowrap" }}>
+                        {pnl !== undefined && (
+                          <div style={{ display: "flex", flexDirection: "column", gap: 1 }}>
+                            <span style={{ color: pnl >= 0 ? T.green : T.red, fontWeight: 700 }}>{sign(pnl)}{eur(pnl)}</span>
+                            {t.amount ? (() => { const pct = (pnl / t.amount) * 100; return <span style={{ color: pct >= 0 ? T.green : T.red, fontWeight: 600, fontSize: 9 }}>{sign(pct)}{Math.abs(pct).toFixed(2)}%</span>; })() : null}
+                          </div>
+                        )}
                       </td>
                       <td style={{ padding: "9px 10px" }}>
                         {(() => {
@@ -5807,9 +5851,9 @@ JSON: {"signals":[{"id":"btc","sinal":"COMPRAR|VENDER|AGUARDAR","razao":"1 frase
                           );
                         })()}
                       </td>
-                      <td style={{ padding: "9px 10px" }}>
+                      {colsVisiveis.mercado && <td style={{ padding: "9px 10px" }}>
                         {isOpen ? <MarketBadge assetId={t.assetId} /> : <span style={{ color: T.muted, fontSize: 10 }}>—</span>}
-                      </td>
+                      </td>}
                     </tr>
                   );
                 })}
@@ -6437,6 +6481,7 @@ pm2 save && pm2 startup`}</CodeBlock>
             }}>📋 Copiar UID</button>
           </div>
         )}
+        {!isSimTab && (
         <div onClick={() => setDefGrupo(g => ({ ...g, ai: !g.ai }))} style={{ display: "flex", alignItems: "center", gap: 12, padding: "14px 18px", cursor: "pointer", background: defGrupo.ai ? `${T.gold}0c` : T.card, border: `1px solid ${defGrupo.ai ? T.gold + "44" : T.border}`, borderRadius: 14 }}>
           <span style={{ fontSize: 20 }}>⚡</span>
           <div style={{ flex: 1 }}>
@@ -6445,9 +6490,10 @@ pm2 save && pm2 startup`}</CodeBlock>
           </div>
           <span style={{ fontSize: 13, color: T.muted, transform: defGrupo.ai ? "rotate(90deg)" : "none", transition: "transform 0.2s" }}>▶</span>
         </div>
+        )}
 
         {/* Perfil de risco */}
-        {defGrupo.ai && (<>
+        {!isSimTab && defGrupo.ai && (<>
         {/* Botão: aplicar configuração recomendada do AI Brain (começar seguro) */}
         {!isSimTab && (
           <div style={{ background: `${T.green}0c`, border: `1px solid ${T.green}33`, borderRadius: 12, padding: "14px 18px", display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12, flexWrap: "wrap" }}>
@@ -7021,6 +7067,7 @@ pm2 save && pm2 startup`}</CodeBlock>
           </div>
 
           {/* ═══ GRUPO: DCA ═══ */}
+          {!isSimTab && (
           <div onClick={() => setDefGrupo(g => ({ ...g, dca: !g.dca }))} style={{ display: "flex", alignItems: "center", gap: 12, padding: "14px 18px", cursor: "pointer", background: defGrupo.dca ? `${T.green}0c` : T.card, border: `1px solid ${defGrupo.dca ? T.green + "44" : T.border}`, borderRadius: 14 }}>
             <span style={{ fontSize: 20 }}>🎯</span>
             <div style={{ flex: 1 }}>
@@ -7029,7 +7076,8 @@ pm2 save && pm2 startup`}</CodeBlock>
             </div>
             <span style={{ fontSize: 13, color: T.muted, transform: defGrupo.dca ? "rotate(90deg)" : "none", transition: "transform 0.2s" }}>▶</span>
           </div>
-          {defGrupo.dca && (<>
+          )}
+          {!isSimTab && defGrupo.dca && (<>
           {/* ── DCA: travão de emergência (desligar o núcleo passivo) ── */}
           {!isSimTab && (() => {
             const setDca = (v) => {
@@ -7149,6 +7197,7 @@ pm2 save && pm2 startup`}</CodeBlock>
           {/* (bloco AI Brain mestre movido para o topo do grupo Trading Ativo) */}
 
           {/* ═══ GRUPO: ZONA DE PERIGO ═══ */}
+          {!isSimTab && (
           <div onClick={() => setDefGrupo(g => ({ ...g, perigo: !g.perigo }))} style={{ display: "flex", alignItems: "center", gap: 12, padding: "14px 18px", cursor: "pointer", background: defGrupo.perigo ? `${T.red}0c` : T.card, border: `1px solid ${defGrupo.perigo ? T.red + "44" : T.border}`, borderRadius: 14 }}>
             <span style={{ fontSize: 20 }}>⚠️</span>
             <div style={{ flex: 1 }}>
@@ -7157,7 +7206,8 @@ pm2 save && pm2 startup`}</CodeBlock>
             </div>
             <span style={{ fontSize: 13, color: T.muted, transform: defGrupo.perigo ? "rotate(90deg)" : "none", transition: "transform 0.2s" }}>▶</span>
           </div>
-          {defGrupo.perigo && (<>
+          )}
+          {!isSimTab && defGrupo.perigo && (<>
           {/* ── Zona de perigo: recomeço de raiz (limpa a BD no servidor) ── */}
           {!isSimTab && (
             <div style={{ marginTop: 8, padding: "16px 18px", borderRadius: 10, border: `1px solid ${T.red}33`, background: `${T.red}08` }}>
