@@ -267,6 +267,35 @@ function MarketBadge({ assetId, showLabel = false }) {
   );
 }
 
+// Controlo "só lucro": input do alvo + botão de sugestão.
+// Mantém estado local para o valor da caixa atualizar de imediato ao carregar
+// na sugestão (sem esperar pelo round-trip ao bot/Firestore).
+function LucroAlvoControl({ t, vol, cmdToBot }) {
+  const sugerido = Math.round((0.5 + (vol ?? 0.004) * 800) * 2) / 2; // arredonda a 0,5
+  const [alvo, setAlvo] = useState(t.lucroAlvo || 2);
+  // Ressincroniza se o valor confirmado pelo bot mudar externamente.
+  useEffect(() => { setAlvo(t.lucroAlvo || 2); }, [t.lucroAlvo]);
+  return (
+    <span style={{ display: "inline-flex", alignItems: "center", gap: 2 }}>
+      <input type="number" min={0.5} step={0.5} value={alvo}
+        onChange={(e) => setAlvo(e.target.value)}
+        onBlur={(e) => {
+          const v = parseFloat(e.target.value);
+          if (v > 0) cmdToBot({ type: "POS_VENDER_LUCRO", posId: t.id, ativar: true, lucroAlvo: v }, `🎯 ${t.assetSym || t.assetId}: alvo atualizado para +${v}%`);
+        }}
+        style={{ width: 40, padding: "2px 4px", borderRadius: 5, border: `1px solid ${T.border}`, background: "rgba(0,0,0,0.3)", color: T.green, fontSize: 9, textAlign: "right" }} />
+      <span style={{ fontSize: 9, color: T.muted }}>%</span>
+      <button onClick={() => {
+        setAlvo(sugerido);
+        cmdToBot({ type: "POS_VENDER_LUCRO", posId: t.id, ativar: true, lucroAlvo: sugerido }, `💡 ${t.assetSym || t.assetId}: alvo sugerido +${sugerido}% (volatilidade)`);
+      }} title={`Sugestão baseada na volatilidade de ${t.assetSym || t.assetId}: +${sugerido}%. Cobre taxas e a oscilação típica do ativo.`}
+      style={{ padding: "2px 6px", borderRadius: 5, fontSize: 8.5, fontWeight: 700, cursor: "pointer", fontFamily: "inherit", background: `${T.gold}18`, border: `1px solid ${T.gold}44`, color: T.gold, whiteSpace: "nowrap" }}>
+        💡 {sugerido}%
+      </button>
+    </span>
+  );
+}
+
 function KPI({ label, value, sub, color = T.text, xl }) {
   return (
     <div>
@@ -5805,30 +5834,8 @@ JSON: {"signals":[{"id":"btc","sinal":"COMPRAR|VENDER|AGUARDAR","razao":"1 frase
                               style={{ padding: "3px 8px", borderRadius: 6, fontSize: 9, fontWeight: 700, cursor: "pointer", fontFamily: "inherit",
                                 background: t.aiGerido ? `${T.green}22` : "transparent", border: `1px solid ${t.aiGerido ? T.green : T.border}`, color: t.aiGerido ? T.green : T.muted }}
                             >{t.aiGerido ? "🎯 só lucro" : "○ só lucro"}</button>
-                            {t.aiGerido && (
-                              <span style={{ display: "inline-flex", alignItems: "center", gap: 2 }}>
-                                <input type="number" min={0.5} step={0.5} defaultValue={t.lucroAlvo || 2} key={`la-${t.id}-${t.lucroAlvo}`}
-                                  onBlur={(e) => {
-                                    const alvo = parseFloat(e.target.value);
-                                    if (alvo > 0 && user) cmdToBot({ type: "POS_VENDER_LUCRO", posId: t.id, ativar: true, lucroAlvo: alvo }, `🎯 ${t.assetSym || t.assetId}: alvo atualizado para +${alvo}%`);
-                                  }}
-                                  style={{ width: 40, padding: "2px 4px", borderRadius: 5, border: `1px solid ${T.border}`, background: "rgba(0,0,0,0.3)", color: T.green, fontSize: 9, textAlign: "right" }} />
-                                <span style={{ fontSize: 9, color: T.muted }}>%</span>
-                                {(() => {
-                                  // Sugestão baseada na volatilidade real do ativo: cobre taxas (~0,5%)
-                                  // + margem proporcional à oscilação típica. Voláteis → alvo maior.
-                                  const vol = (a?.vol ?? 0.004);
-                                  const sugerido = Math.round((0.5 + vol * 800) * 2) / 2; // arredonda a 0,5
-                                  return (
-                                    <button onClick={() => {
-                                      if (user) cmdToBot({ type: "POS_VENDER_LUCRO", posId: t.id, ativar: true, lucroAlvo: sugerido }, `💡 ${t.assetSym || t.assetId}: alvo sugerido +${sugerido}% (volatilidade)`);
-                                    }} title={`Sugestão baseada na volatilidade de ${a?.sym || t.assetId}: +${sugerido}%. Cobre taxas e a oscilação típica do ativo.`}
-                                    style={{ padding: "2px 6px", borderRadius: 5, fontSize: 8.5, fontWeight: 700, cursor: "pointer", fontFamily: "inherit", background: `${T.gold}18`, border: `1px solid ${T.gold}44`, color: T.gold, whiteSpace: "nowrap" }}>
-                                      💡 {sugerido}%
-                                    </button>
-                                  );
-                                })()}
-                              </span>
+                            {t.aiGerido && user && (
+                              <LucroAlvoControl t={t} vol={a?.vol} cmdToBot={cmdToBot} />
                             )}
                           </div>
                         )}
