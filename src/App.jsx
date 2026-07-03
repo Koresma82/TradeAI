@@ -5077,9 +5077,14 @@ JSON: {"signals":[{"id":"btc","sinal":"COMPRAR|VENDER|AGUARDAR","razao":"1 frase
       "P&L": "pnl", "%": "pct", "IA": null, "Hold": null, "Status": "status", "Mercado": null,
     };
 
-    // Resumo por origem (só trades fechados) — para comparar o que compensa
+    // Estados que NÃO são vendas reais (fechos técnicos): reset do testnet ou
+    // reconciliação. Não contam para win rate nem P&L — falseariam as métricas.
+    const naoVenda = s => s === "RESET-TESTNET" || s === "FECHADA-RECON";
+    const eVendaReal = t => t.status !== "ABERTA" && !naoVenda(t.status);
+
+    // Resumo por origem (só trades fechados REAIS) — para comparar o que compensa
     const resumoOrigem = {};
-    activeTrades.filter(t => t.status !== "ABERTA").forEach(t => {
+    activeTrades.filter(eVendaReal).forEach(t => {
       const o = origemDe(t);
       if (!resumoOrigem[o]) resumoOrigem[o] = { n: 0, wins: 0, pnl: 0 };
       resumoOrigem[o].n++;
@@ -5087,7 +5092,7 @@ JSON: {"signals":[{"id":"btc","sinal":"COMPRAR|VENDER|AGUARDAR","razao":"1 frase
       resumoOrigem[o].pnl += t.pnl || 0;
     });
 
-    const filteredClosed  = filtered.filter(t => t.status !== "ABERTA");
+    const filteredClosed  = filtered.filter(eVendaReal);
     const filteredOpen    = filtered.filter(t => t.status === "ABERTA");
     const filteredWins    = filteredClosed.filter(t => (t.pnl||t.curPnl||0) > 0);
     const filteredLosses  = filteredClosed.filter(t => (t.pnl||t.curPnl||0) <= 0);
@@ -5216,10 +5221,13 @@ JSON: {"signals":[{"id":"btc","sinal":"COMPRAR|VENDER|AGUARDAR","razao":"1 frase
           // trades. Antes, o arquivo só aparecia em "sim" → o histórico de paper
           // desaparecia depois do arquivo da meia-noite. Agora aparece nos dois.
           const wantMode = histTab === "sim" ? "sim" : "live";
+          // Fechos técnicos (reset testnet / reconciliação) não são vendas reais —
+          // não contam para P&L nem win rate (falseariam as métricas do dia).
+          const naoVendaArq = s => s === "RESET-TESTNET" || s === "FECHADA-RECON";
           const archForTab = dailyArchives
             .map((a) => {
               const trades = (Array.isArray(a.trades) ? a.trades : [])
-                .filter(t => (t.mode || "sim") === wantMode);
+                .filter(t => (t.mode || "sim") === wantMode && !naoVendaArq(t.status));
               if (!trades.length) return null;
               const pnl     = +trades.reduce((s, t) => s + (t.pnl || 0), 0).toFixed(2);
               const wins    = trades.filter(t => (t.pnl || 0) > 0).length;
@@ -5700,7 +5708,6 @@ JSON: {"signals":[{"id":"btc","sinal":"COMPRAR|VENDER|AGUARDAR","razao":"1 frase
                       );
                     });
                   })()}
-                  })}
                 </tr>
               </thead>
               <tbody>
@@ -5841,11 +5848,13 @@ JSON: {"signals":[{"id":"btc","sinal":"COMPRAR|VENDER|AGUARDAR","razao":"1 frase
                             : t.status === "ROTACAO" ? "🔄 Rotação"
                             : t.status === "CANCELADA" ? "✗ Cancelada"
                             : t.status === "FECHADA-RECON" ? "🔧 Reconciliada"
+                            : t.status === "RESET-TESTNET" ? "🧪 Reset testnet"
                             : isTrailWin             ? "📈 Trailing"
                             : isRealSL               ? "🛑 SL"
                             : t.status && t.status !== "ABERTA" ? `· ${t.status}`
                             : win ? "✓ Fechado" : "✗ Fechado";
                           const c = isOpen ? T.blue
+                            : (t.status === "RESET-TESTNET" || t.status === "FECHADA-RECON") ? T.muted
                             : isRealSL ? T.red
                             : win ? T.green : T.red;
                           return (
