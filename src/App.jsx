@@ -685,16 +685,32 @@ export default function TradeAI() {
 
   const [tab, setTab]             = useState(() => {
     // Deep-link: ?tab=dca abre direto no separador (usado no link do Telegram).
+    // Persistência: ao carregar F5, mantém o separador atual (URL > localStorage).
     if (typeof window !== "undefined") {
+      const validos = ["dashboard", "dca", "relatorio", "portfolio", "markets", "history", "sugestoes", "settings", "resumo"];
       try {
         const t = new URLSearchParams(window.location.search).get("tab");
-        const validos = ["dashboard", "dca", "relatorio", "portfolio", "markets", "history", "sugestoes", "settings"];
         if (t && validos.includes(t)) return t;
+      } catch {}
+      try {
+        const saved = localStorage.getItem("tradeai_tab");
+        if (saved && validos.includes(saved)) return saved;
       } catch {}
       if (window.innerWidth < 820) return "resumo";
     }
     return "dashboard";
   });
+  // Sempre que o separador muda, grava no URL (?tab=) e em localStorage, para
+  // sobreviver a um F5 sem voltar ao Dashboard.
+  useEffect(() => {
+    if (typeof window === "undefined" || !tab) return;
+    try {
+      const url = new URL(window.location.href);
+      url.searchParams.set("tab", tab);
+      window.history.replaceState({}, "", url);
+    } catch {}
+    try { localStorage.setItem("tradeai_tab", tab); } catch {}
+  }, [tab]);
   // Resumo é um separador só-mobile: num ecrã grande, cai no Dashboard.
   useEffect(() => { if (!isMobile && tab === "resumo") setTab("dashboard"); }, [isMobile, tab]);
   const tabRef = useRef("dashboard");
@@ -5134,16 +5150,23 @@ JSON: {"signals":[{"id":"btc","sinal":"COMPRAR|VENDER|AGUARDAR","razao":"1 frase
 
     return (
       <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
-        {/* Mode tabs */}
-        <div style={{ display: "flex", gap: 0, background: "rgba(0,0,0,0.3)", borderRadius: 10, overflow: "hidden", width: "fit-content" }}>
-          {[["sim","◎ Simulação"], ["live", botModoReal ? "● Live Real" : "📝 Paper"]].map(([id, label]) => (
-            <button key={id} onClick={() => { setHistTab(id); setHistCat("Todos"); }} style={{
-              padding: "10px 22px", fontSize: 12, fontWeight: 700, cursor: "pointer",
-              background: histTab===id ? (id==="sim"?`${T.gold}20`:`${T.red}20`) : "transparent",
-              color: histTab===id ? (id==="sim"?T.gold:T.red) : T.muted,
-              border: "none", fontFamily: "inherit",
-            }}>{label}</button>
-          ))}
+        {/* Mode tabs + refresh */}
+        <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
+          <div style={{ display: "flex", gap: 0, background: "rgba(0,0,0,0.3)", borderRadius: 10, overflow: "hidden", width: "fit-content" }}>
+            {[["sim","◎ Simulação"], ["live", botModoReal ? "● Live Real" : "📝 Paper"]].map(([id, label]) => (
+              <button key={id} onClick={() => { setHistTab(id); setHistCat("Todos"); }} style={{
+                padding: "10px 22px", fontSize: 12, fontWeight: 700, cursor: "pointer",
+                background: histTab===id ? (id==="sim"?`${T.gold}20`:`${T.red}20`) : "transparent",
+                color: histTab===id ? (id==="sim"?T.gold:T.red) : T.muted,
+                border: "none", fontFamily: "inherit",
+              }}>{label}</button>
+            ))}
+          </div>
+          <button onClick={() => window.location.reload()}
+            title="Recarregar dados do histórico"
+            style={{ background: `${T.accent}15`, border: `1px solid ${T.accent}33`, borderRadius: 8, padding: "8px 16px", fontSize: 11, fontWeight: 700, color: T.aLight, cursor: "pointer", fontFamily: "inherit", whiteSpace: "nowrap" }}>
+            ↻ Refresh
+          </button>
         </div>
 
         {/* KPIs */}
@@ -8024,7 +8047,8 @@ JSON puro:
     { id: "investir",   icon: "🎯", label: "Investir", group: ["dca", "portfolio", "relatorio"] },
     { id: "markets",    icon: "◎",  label: "Mercados", group: ["markets", "sugestoes"] },
     { id: "lab",        icon: "⚡",  label: "Laboratório", aiGroup: true, group: ["strategies", "daytrading", "ai"] },
-    { id: "mais",       icon: "⚙",  label: "Mais", group: ["history", "messages", "settings", "guide"] },
+    { id: "history",    icon: "≡",  label: "Histórico" },
+    { id: "mais",       icon: "⚙",  label: "Mais", group: ["messages", "settings", "guide"] },
   ];
   // Sub-abas dentro de cada zona agrupada (label + id da página)
   const SUBTABS = {
@@ -8043,7 +8067,6 @@ JSON puro:
       { id: "ai",        icon: "◆",  label: "AI Intel" },
     ],
     mais: [
-      { id: "history",   icon: "≡",  label: "Histórico" },
       { id: "messages",  icon: "🔔", label: "Mensagens" },
       { id: "settings",  icon: "⚙",  label: "Definições" },
       { id: "guide",     icon: "◉",  label: "Guia" },
