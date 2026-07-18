@@ -296,6 +296,49 @@ function LucroAlvoControl({ t, vol, cmdToBot }) {
   );
 }
 
+// Controlo do SL por posição (OVERLAY ao SL das definições).
+// Desligado por defeito em todas as entradas (AI e manuais). Quando ligado,
+// permite definir uma % própria e sugere um valor com base na volatilidade.
+function SLControl({ t, vol, onSetSL }) {
+  const ativo = t.slAtivo === true;
+  // Sugestão: SL deve ser MAIOR que a oscilação normal do ativo, senão é
+  // acionado por ruído. Base 2% + 2x a volatilidade típica.
+  const sugerido = Math.round((2 + (vol ?? 0.004) * 1600) * 2) / 2;
+  const [pct, setPct] = useState(t.slPct || sugerido);
+  useEffect(() => { if (t.slPct) setPct(t.slPct); }, [t.slPct]);
+  return (
+    <span style={{ display: "inline-flex", alignItems: "center", gap: 2 }}>
+      <button onClick={() => onSetSL(t, !ativo, ativo ? null : (parseFloat(pct) || sugerido))}
+        title={ativo
+          ? `Stop-loss ATIVO a -${t.slPct || "geral"}%. Clica para desligar (posição fica sem proteção, exceto o SL de catástrofe).`
+          : "Stop-loss DESLIGADO — a posição não fecha por SL. Clica para ligar e definir a tua percentagem."}
+        style={{ padding: "3px 8px", borderRadius: 6, fontSize: 9, fontWeight: 700, cursor: "pointer", fontFamily: "inherit", whiteSpace: "nowrap",
+          background: ativo ? `${T.red}22` : "transparent",
+          border: `1px solid ${ativo ? T.red : T.border}`,
+          color: ativo ? T.red : T.muted }}>
+        {ativo ? "🛡️ SL" : "○ SL"}
+      </button>
+      {ativo && (
+        <>
+          <input type="number" min={0.5} step={0.5} value={pct}
+            onChange={(e) => setPct(e.target.value)}
+            onBlur={(e) => {
+              const v = parseFloat(e.target.value);
+              if (v > 0) onSetSL(t, true, v);
+            }}
+            style={{ width: 40, padding: "2px 4px", borderRadius: 5, border: `1px solid ${T.border}`, background: "rgba(0,0,0,0.3)", color: T.red, fontSize: 9, textAlign: "right" }} />
+          <span style={{ fontSize: 9, color: T.muted }}>%</span>
+          <button onClick={() => { setPct(sugerido); onSetSL(t, true, sugerido); }}
+            title={`SL sugerido para ${t.assetSym || t.assetId}: -${sugerido}%. Fica acima do ruído normal do ativo, evitando fechos prematuros.`}
+            style={{ padding: "2px 6px", borderRadius: 5, fontSize: 8.5, fontWeight: 700, cursor: "pointer", fontFamily: "inherit", background: `${T.gold}18`, border: `1px solid ${T.gold}44`, color: T.gold, whiteSpace: "nowrap" }}>
+            💡 {sugerido}%
+          </button>
+        </>
+      )}
+    </span>
+  );
+}
+
 function KPI({ label, value, sub, color = T.text, xl }) {
   return (
     <div>
@@ -800,7 +843,10 @@ export default function TradeAI() {
     aiBrainConfianca:    78,     // confiança mínima (%) para a IA agir
     trailingStop:        false,  // protege lucros movendo o stop-loss para cima
     trailingStopPct:     4,      // distância (%) do trailing stop abaixo do pico
+    slCatastrofe:        true,   // rede de segurança global (SL por posição está OFF por defeito)
+    slCatastrofePct:     15,     // queda (%) desde a entrada que força fecho de emergência
     aiExitOnFlip:        true,   // sair quando a IA muda de COMPRAR para VENDER
+    logicaEntrada:       "queda", // "queda" (mean-reversion) | "momentum" (força) | "ambas"
     aiSignalsMin:        15,     // intervalo (min) entre análises AI do bot — poupa tokens
     catAjuste:           { Crypto: 1.5, Commodity: 1.0, ETF: 0.7, Forex: 0.4, "Ação": 1.1 }, // multiplicador de SL/TP/queda por categoria
     perOrigem:           { estrategias: { valorFixo: 0, maxValorTrade: 0 }, aibrain: { valorFixo: 0, maxValorTrade: 0 }, daytrading: { valorFixo: 0, maxValorTrade: 0 }, manual: { valorFixo: 0, maxValorTrade: 0 } },
@@ -1626,6 +1672,70 @@ JSON puro — inclui TODOS os ativos relevantes de TODAS as categorias:
                 )}
                 <div onClick={() => setTab("settings")} style={{ fontSize: 10, color: T.accent, marginTop: 10, cursor: "pointer", fontWeight: 600 }}>Gerir nas Definições →</div>
               </Glass>
+
+              {/* Proteções & risco — resumo para não ter de ir às Definições */}
+              {(() => {
+                const posAtivas = activePositions.filter(p => p.stratId !== "dca");
+                const comSL = posAtivas.filter(p => p.slAtivo === true);
+                const comLucro = posAtivas.filter(p => p.aiGerido && (p.lucroAlvo || 0) > 0);
+                const catOn = s.slCatastrofe !== false;
+                const catPct = Math.abs(s.slCatastrofePct ?? 15);
+                const semProtecao = posAtivas.length - comSL.length;
+                return (
+                  <Glass style={{ padding: "16px 20px", border: `1px solid ${catOn ? T.border : T.red + "44"}` }}>
+                    <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 10 }}>
+                      <span style={{ fontSize: 12, fontWeight: 700 }}>🛡️ Proteções & risco</span>
+                      <span style={{ fontSize: 10, fontWeight: 700, color: catOn ? T.gold : T.red }}>
+                        {catOn ? `Catástrofe: ● -${catPct}%` : "Catástrofe: ○ Desligado"}
+                      </span>
+                    </div>
+                    <div style={{ display: "flex", flexDirection: "column", gap: 7, fontSize: 11 }}>
+                      <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+                        <span style={{ fontSize: 13 }}>🛑</span>
+                        <span style={{ flex: 1, fontWeight: 600 }}>Stop-loss por posição</span>
+                        <span style={{ fontSize: 10, fontWeight: 700, color: comSL.length ? T.red : T.muted }}>
+                          {posAtivas.length === 0 ? "—" : `${comSL.length}/${posAtivas.length} com SL`}
+                        </span>
+                      </div>
+                      <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+                        <span style={{ fontSize: 13 }}>🎯</span>
+                        <span style={{ flex: 1, fontWeight: 600 }}>Só lucro (alvo definido)</span>
+                        <span style={{ fontSize: 10, fontWeight: 700, color: comLucro.length ? T.green : T.muted }}>
+                          {posAtivas.length === 0 ? "—" : `${comLucro.length}/${posAtivas.length} ativo`}
+                        </span>
+                      </div>
+                      <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+                        <span style={{ fontSize: 13 }}>📉</span>
+                        <span style={{ flex: 1, fontWeight: 600 }}>Trailing stop</span>
+                        <span style={{ fontSize: 10, fontWeight: 700, color: s.trailingStop ? T.green : T.muted }}>
+                          {s.trailingStop ? `● -${s.trailingStopPct}% do pico` : "○ Desligado"}
+                        </span>
+                      </div>
+                      <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+                        <span style={{ fontSize: 13 }}>🤖</span>
+                        <span style={{ flex: 1, fontWeight: 600 }}>Confiança mínima AI</span>
+                        <span style={{ fontSize: 10, fontWeight: 700, color: T.aLight }}>{s.aiBrainConfianca || 78}%</span>
+                      </div>
+                      <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+                        <span style={{ fontSize: 13 }}>💰</span>
+                        <span style={{ flex: 1, fontWeight: 600 }}>Teto por trade</span>
+                        <span style={{ fontSize: 10, fontWeight: 700, color: T.aLight }}>€{s.maxValorTrade || 0}</span>
+                      </div>
+                    </div>
+                    {semProtecao > 0 && catOn && (
+                      <div style={{ marginTop: 10, fontSize: 10, color: T.gold, background: `${T.gold}12`, borderRadius: 6, padding: "7px 10px", lineHeight: 1.5 }}>
+                        {semProtecao} posição(ões) sem SL individual — protegidas apenas pelo travão de catástrofe (-{catPct}%).
+                      </div>
+                    )}
+                    {semProtecao > 0 && !catOn && (
+                      <div style={{ marginTop: 10, fontSize: 10, color: T.red, background: `${T.red}12`, border: `1px solid ${T.red}33`, borderRadius: 6, padding: "7px 10px", lineHeight: 1.5 }}>
+                        ⚠️ {semProtecao} posição(ões) sem qualquer proteção contra quedas. Sem SL individual e sem travão de catástrofe.
+                      </div>
+                    )}
+                    <div onClick={() => setTab("settings")} style={{ fontSize: 10, color: T.accent, marginTop: 10, cursor: "pointer", fontWeight: 600 }}>Ajustar nas Definições →</div>
+                  </Glass>
+                );
+              })()}
             </div>
           );
         })()}
@@ -2739,6 +2849,21 @@ JSON: {"signals":[{"id":"btc","sinal":"COMPRAR|VENDER|AGUARDAR","razao":"1 frase
   // Envia um comando ao bot E segue o resultado, dando feedback ao utilizador.
   // Resolve o problema de "enviei e não aconteceu nada" — agora há toast de
   // confirmação ou de recusa com a razão (ex.: sem preço de mercado atual).
+  // Liga/desliga o SL de uma posição (overlay ao SL das definições).
+  // Escreve direto no trade; o bot sincroniza via watchOpenTrades. Nunca altera
+  // o pos.sl original — só define se é respeitado e com que percentagem.
+  const onSetSL = (t, ativar, pct) => {
+    if (!user) { toast("Inicia sessão primeiro", "error"); return; }
+    const patch = ativar ? { slAtivo: true, slPct: pct } : { slAtivo: false };
+    import("./firebase.js").then(({ updateTrade }) =>
+      updateTrade(user.uid, t.id, patch)
+        .then(() => toast(
+          ativar ? `🛡️ SL ligado em ${t.assetSym || t.assetId} a -${pct}%`
+                 : `⚠️ SL desligado em ${t.assetSym || t.assetId}`,
+          ativar ? "success" : "warn"))
+        .catch(() => toast("Falha ao atualizar o SL", "error")));
+  };
+
   const cmdToBot = (payload, sentMsg) => {
     if (!user) { toast("Inicia sessão para enviar ordens ao bot", "error"); return; }
     if (sentMsg) toast(sentMsg, payload.type === "SELL" ? "sell" : "info");
@@ -5678,7 +5803,30 @@ JSON: {"signals":[{"id":"btc","sinal":"COMPRAR|VENDER|AGUARDAR","razao":"1 frase
                                   <td style={{ padding: "6px 8px" }}>${t.entryPrice}</td>
                                   <td style={{ padding: "6px 8px" }}>${t.closePrice ?? "—"}</td>
                                   <td style={{ padding: "6px 8px", fontWeight: 700, color: tp ? T.green : T.red }}>{sign(t.pnl || 0)}€{Math.abs(t.pnl || 0).toFixed(2)}</td>
-                                  <td style={{ padding: "6px 8px", color: T.muted }}>{t.status}</td>
+                                  <td style={{ padding: "6px 8px", color: T.muted }}>
+                                    <div style={{ display: "flex", alignItems: "center", gap: 4, flexWrap: "wrap" }}>
+                                      <span>{t.status}</span>
+                                      {/* Configuração ativa no momento do fecho: ajuda a perceber
+                                          porque é que a posição saiu (ou não) como saiu. */}
+                                      {t.aiGerido && (t.lucroAlvo > 0) && (
+                                        <span title={`"Só lucro" estava ativo com alvo +${t.lucroAlvo}%`}
+                                          style={{ fontSize: 8, fontWeight: 700, padding: "1px 5px", borderRadius: 4, background: `${T.green}22`, border: `1px solid ${T.green}55`, color: T.green, whiteSpace: "nowrap" }}>
+                                          🎯 {t.lucroAlvo}%
+                                        </span>
+                                      )}
+                                      {t.slAtivo === true ? (
+                                        <span title={`Stop-loss ativo${t.slPct ? ` a -${t.slPct}%` : ""}${t.sl ? ` (preço $${t.sl})` : ""}`}
+                                          style={{ fontSize: 8, fontWeight: 700, padding: "1px 5px", borderRadius: 4, background: `${T.red}22`, border: `1px solid ${T.red}55`, color: T.red, whiteSpace: "nowrap" }}>
+                                          🛡️ SL {t.slPct ? `${t.slPct}%` : (t.sl ? `$${t.sl}` : "")}
+                                        </span>
+                                      ) : (
+                                        <span title="Stop-loss estava DESLIGADO nesta posição"
+                                          style={{ fontSize: 8, fontWeight: 700, padding: "1px 5px", borderRadius: 4, background: "transparent", border: `1px solid ${T.border}`, color: T.muted, whiteSpace: "nowrap" }}>
+                                          ○ sem SL
+                                        </span>
+                                      )}
+                                    </div>
+                                  </td>
                                 </tr>
                               );
                             })}
@@ -5860,6 +6008,7 @@ JSON: {"signals":[{"id":"btc","sinal":"COMPRAR|VENDER|AGUARDAR","razao":"1 frase
                             {t.aiGerido && user && (
                               <LucroAlvoControl t={t} vol={a?.vol} cmdToBot={cmdToBot} />
                             )}
+                            {user && <SLControl t={t} vol={a?.vol} onSetSL={onSetSL} />}
                           </div>
                         )}
                       </td>
@@ -6986,6 +7135,34 @@ pm2 save && pm2 startup`}</CodeBlock>
                 <div style={{ display: "flex", justifyContent: "space-between", fontSize: 9, color: T.muted, marginTop: 4 }}>
                   <span>60% · mais trades, mais risco</span><span>95% · só sinais fortes</span>
                 </div>
+
+                {/* Lógica de entrada — que tipo de oportunidade a IA aceita */}
+                <div style={{ marginTop: 16, paddingTop: 14, borderTop: `1px solid ${T.border}` }}>
+                  <div style={{ fontSize: 11, fontWeight: 700, marginBottom: 4 }}>📐 Lógica de entrada (confirmação técnica)</div>
+                  <div style={{ fontSize: 10, color: T.muted, marginBottom: 10, lineHeight: 1.5 }}>
+                    O Groq propõe, mas os indicadores têm de confirmar. Isto define <b>que tipo</b> de confirmação exiges.
+                  </div>
+                  <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+                    {[
+                      { id: "queda", nome: "Comprar quedas (mean-reversion)", desc: "Entra em RSI baixo / queda desde o topo. Aposta na recuperação." },
+                      { id: "momentum", nome: "Comprar força (momentum)", desc: "Entra em tendência de alta confirmada. Evita apanhar facas a cair." },
+                      { id: "ambas", nome: "Ambas", desc: "Aceita qualquer uma. Mais entradas, menos seletivo." },
+                    ].map(op => {
+                      const sel = (local.logicaEntrada || "queda") === op.id;
+                      return (
+                        <div key={op.id} onClick={() => upd("logicaEntrada", op.id)}
+                          style={{ padding: "9px 12px", borderRadius: 8, cursor: "pointer",
+                            background: sel ? `${T.accent}15` : "rgba(0,0,0,0.15)",
+                            border: `1px solid ${sel ? T.accent : T.border}` }}>
+                          <div style={{ fontSize: 11, fontWeight: 700, color: sel ? T.aLight : T.text }}>
+                            {sel ? "● " : "○ "}{op.nome}
+                          </div>
+                          <div style={{ fontSize: 9.5, color: T.muted, marginTop: 2, lineHeight: 1.4 }}>{op.desc}</div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                </div>
               </div>
             )}
           </div>
@@ -7013,6 +7190,41 @@ pm2 save && pm2 startup`}</CodeBlock>
                 <div style={{ display: "flex", justifyContent: "space-between", fontSize: 9, color: T.muted, marginTop: 4 }}>
                   <span>1% · trava cedo</span><span>12% · dá mais espaço</span>
                 </div>
+              </div>
+            )}
+          </div>
+
+          {/* SL de catástrofe — rede de segurança global */}
+          <div style={{ padding: "14px 16px", borderRadius: 10, background: "rgba(0,0,0,0.2)", border: `1px solid ${local.slCatastrofe ? `${T.red}44` : T.border}`, marginTop: 12 }}>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 12 }}>
+              <div>
+                <div style={{ fontSize: 12, fontWeight: 700 }}>🚨 SL de Catástrofe — rede de segurança</div>
+                <div style={{ fontSize: 10, color: T.muted, marginTop: 2 }}>
+                  O stop-loss normal está <b>desligado por defeito</b> em cada posição (ligas onde quiseres).
+                  Este é o travão de emergência: fecha qualquer posição que caia além da percentagem definida,
+                  mesmo sem SL individual. Evita perdas ilimitadas numa queda forte.
+                </div>
+              </div>
+              <div onClick={() => upd("slCatastrofe", !local.slCatastrofe)} style={{ cursor: "pointer", flexShrink: 0 }}>
+                <div style={{ width: 44, height: 24, borderRadius: 12, background: local.slCatastrofe ? T.red : "rgba(255,255,255,0.1)", position: "relative", transition: "all 0.2s" }}>
+                  <div style={{ position: "absolute", top: 3, left: local.slCatastrofe ? 22 : 2, width: 18, height: 18, borderRadius: "50%", background: "#fff", transition: "left 0.2s" }} />
+                </div>
+              </div>
+            </div>
+            {local.slCatastrofe ? (
+              <div style={{ marginTop: 12 }}>
+                <div style={{ fontSize: 11, color: T.muted, marginBottom: 6 }}>
+                  Fecha se cair <b style={{ color: T.red }}>-{local.slCatastrofePct}%</b> abaixo da entrada
+                </div>
+                <input type="range" min={5} max={40} step={1} value={local.slCatastrofePct}
+                  onChange={e => upd("slCatastrofePct", +e.target.value)} style={{ width: "100%", accentColor: T.red }} />
+                <div style={{ display: "flex", justifyContent: "space-between", fontSize: 9, color: T.muted, marginTop: 4 }}>
+                  <span>5% · protege mais</span><span>40% · quase nunca dispara</span>
+                </div>
+              </div>
+            ) : (
+              <div style={{ marginTop: 10, fontSize: 10, color: T.red, background: `${T.red}12`, border: `1px solid ${T.red}33`, borderRadius: 6, padding: "8px 10px" }}>
+                ⚠️ Sem rede de segurança: posições sem SL individual podem cair indefinidamente sem o bot intervir.
               </div>
             )}
           </div>
