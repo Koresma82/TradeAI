@@ -564,6 +564,14 @@ function RevisaoReforco({ plano, valorPlano, callAI, ASSETS, brokersDisp, onAdic
   const [loading, setLoading] = useState(true);
   const [erro, setErro] = useState(null);
   const [rev, setRev] = useState(null);
+  // Montante que o utilizador tenciona reforçar — usado para mostrar o € por
+  // posição (atuais e novos), não só a percentagem.
+  const [montante, setMontante] = useState(Math.round(valorPlano) || 100);
+
+  // Repartição em € da carteira ATUAL para o montante indicado.
+  const carteiraAtual = (plano.carteira || []).filter(c => (c.peso || 0) > 0);
+  const somaPesos = carteiraAtual.reduce((a, c) => a + (c.peso || 0), 0) || 100;
+  const eurDe = (peso) => ((Number(montante) || 0) * (peso / somaPesos));
 
   useEffect(() => {
     let vivo = true;
@@ -621,20 +629,52 @@ Responde SÓ com este JSON:
       {rev && (
         <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
           <div style={{ fontSize: 11.5, color: T.text, lineHeight: 1.6 }}>{rev.veredito}</div>
+
+          {/* Montante a reforçar — controla o € mostrado por posição */}
+          <div style={{ display: "flex", alignItems: "center", gap: 8, padding: "10px 12px", borderRadius: 8, background: "rgba(0,0,0,0.2)", border: `1px solid ${T.border}` }}>
+            <span style={{ fontSize: 11, color: T.muted, fontWeight: 600 }}>Vou reforçar</span>
+            <span style={{ fontSize: 12, color: T.muted }}>€</span>
+            <input type="number" min={1} step={10} value={montante}
+              onChange={(e) => setMontante(e.target.value)}
+              style={{ width: 70, padding: "5px 8px", borderRadius: 6, border: `1px solid ${T.accent}55`, background: "rgba(0,0,0,0.3)", color: T.aLight, fontSize: 13, fontWeight: 700, textAlign: "right" }} />
+            <span style={{ fontSize: 10, color: T.muted, flex: 1, textAlign: "right" }}>valores abaixo calculados para este montante</span>
+          </div>
+
+          {/* Carteira atual com o valor em € a pôr em cada posição */}
+          <div>
+            <div style={{ fontSize: 10.5, color: T.muted, marginBottom: 8, fontWeight: 700 }}>📋 Repartição do teu reforço:</div>
+            <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+              {carteiraAtual.map(c => {
+                const a = ASSETS.find(x => x.id === c.id);
+                const pctNorm = (c.peso / somaPesos) * 100;
+                return (
+                  <div key={c.id} style={{ display: "flex", alignItems: "center", gap: 10, padding: "8px 12px", borderRadius: 7, background: "rgba(0,0,0,0.15)" }}>
+                    <span style={{ flex: 1, fontSize: 11.5, fontWeight: 600, color: T.text }}>{a?.icon || ""} {a?.name || c.id}</span>
+                    <span style={{ fontSize: 10, color: T.muted }}>{pctNorm.toFixed(0)}%</span>
+                    <span style={{ fontSize: 12.5, fontWeight: 800, color: T.aLight, minWidth: 54, textAlign: "right" }}>€{eurDe(c.peso).toFixed(2)}</span>
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+
           {rev.novos && rev.novos.length > 0 ? (
             <div>
               <div style={{ fontSize: 10.5, color: T.muted, marginBottom: 8, fontWeight: 700 }}>💡 Ativos novos a considerar:</div>
               <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
                 {rev.novos.map(n => {
                   const a = ASSETS.find(x => x.id === n.id);
+                  // € que o novo ativo levaria com o seu peso, para este montante.
+                  const eurNovo = (Number(montante) || 0) * (Number(n.peso) || 0) / 100;
                   return (
                     <div key={n.id} style={{ display: "flex", alignItems: "center", gap: 10, padding: "10px 12px", borderRadius: 8, background: "rgba(0,0,0,0.2)", border: `1px solid ${T.border}` }}>
                       <div style={{ flex: 1 }}>
                         <div style={{ fontSize: 12, fontWeight: 700, color: T.aLight }}>{a?.icon || ""} {a?.name || n.id} <span style={{ fontSize: 10, color: T.muted }}>· {a?.cat}</span></div>
                         <div style={{ fontSize: 9.5, color: T.muted, marginTop: 2, lineHeight: 1.4 }}>{n.razao}</div>
+                        <div style={{ fontSize: 10, color: T.green, marginTop: 3, fontWeight: 700 }}>{n.peso}% · ≈ €{eurNovo.toFixed(2)} do reforço</div>
                       </div>
                       <button onClick={() => onAdicionar(n)} style={{ border: `1px solid ${T.green}55`, background: `${T.green}18`, color: T.green, cursor: "pointer", fontSize: 10.5, fontWeight: 700, padding: "6px 12px", borderRadius: 7, whiteSpace: "nowrap" }}>
-                        + juntar ({n.peso}%)
+                        + juntar
                       </button>
                     </div>
                   );
@@ -649,6 +689,60 @@ Responde SÓ com este JSON:
           {rev.aviso && <div style={{ fontSize: 9.5, color: T.muted, fontStyle: "italic", lineHeight: 1.5 }}>{rev.aviso}</div>}
         </div>
       )}
+    </div>
+  );
+}
+
+// ── Modal de reforço ──────────────────────────────────────────────────────
+// Mostra a repartição em € do reforço por posição (calculada pelas percentagens
+// do plano), a atualizar com o valor. Ao confirmar, envia o comando ao bot.
+function ReforcoModal({ plano, ASSETS, onConfirmar, onFechar }) {
+  const sugerido = plano._valorSugerido || 100;
+  const [valor, setValor] = useState(Math.round(sugerido));
+  const carteira = (plano.carteira || []).filter(c => (c.peso || 0) > 0);
+  const somaPesos = carteira.reduce((a, c) => a + (c.peso || 0), 0) || 100;
+  const v = Number(valor) || 0;
+  const manual = plano.modoExecucao === "manual";
+  return (
+    <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.6)", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 1000, padding: 20 }} onClick={onFechar}>
+      <div onClick={(e) => e.stopPropagation()} style={{ background: T.card2 || "#141922", border: `1px solid ${T.green}44`, borderRadius: 16, padding: "24px 26px", maxWidth: 440, width: "100%", maxHeight: "85vh", overflowY: "auto" }}>
+        <div style={{ fontSize: 16, fontWeight: 800, marginBottom: 4 }}>💪 Reforçar "{plano.nome}"</div>
+        <div style={{ fontSize: 11, color: T.muted, lineHeight: 1.6, marginBottom: 18 }}>
+          {manual
+            ? "Indica quanto vais investir. A app calcula quanto pôr em cada ativo pelas proporções do plano. Depois de confirmares, vais registar a compra que fizeste na tua corretora."
+            : "Indica quanto reforçar. O bot compra no broker pelas proporções do plano."}
+        </div>
+
+        <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 18 }}>
+          <span style={{ fontSize: 13, color: T.muted, fontWeight: 600 }}>Valor total €</span>
+          <input type="number" min={1} step={10} value={valor} autoFocus
+            onChange={(e) => setValor(e.target.value)}
+            style={{ flex: 1, padding: "11px 13px", borderRadius: 10, border: `1px solid ${T.green}66`, background: "rgba(0,0,0,0.3)", color: T.aLight, fontSize: 17, fontWeight: 800, textAlign: "center", fontFamily: "inherit" }} />
+        </div>
+
+        <div style={{ fontSize: 10.5, color: T.muted, fontWeight: 700, marginBottom: 8 }}>📋 Quanto pôr em cada ativo:</div>
+        <div style={{ display: "flex", flexDirection: "column", gap: 6, marginBottom: 20 }}>
+          {carteira.map(c => {
+            const a = ASSETS.find(x => x.id === c.id);
+            const pctNorm = (c.peso / somaPesos) * 100;
+            const eur = v * (c.peso / somaPesos);
+            return (
+              <div key={c.id} style={{ display: "flex", alignItems: "center", gap: 10, padding: "10px 13px", borderRadius: 8, background: "rgba(0,0,0,0.2)", border: `1px solid ${T.border}` }}>
+                <span style={{ flex: 1, fontSize: 12.5, fontWeight: 700, color: T.text }}>{a?.icon || ""} {a?.name || c.id}</span>
+                <span style={{ fontSize: 10, color: T.muted }}>{pctNorm.toFixed(0)}%</span>
+                <span style={{ fontSize: 14, fontWeight: 800, color: T.green, minWidth: 62, textAlign: "right" }}>€{eur.toFixed(2)}</span>
+              </div>
+            );
+          })}
+        </div>
+
+        <div style={{ display: "flex", gap: 10 }}>
+          <button onClick={onFechar} style={{ flex: 1, background: "rgba(255,255,255,0.05)", border: `1px solid ${T.border}`, borderRadius: 11, padding: "13px", fontSize: 13, color: T.muted, cursor: "pointer", fontFamily: "inherit", fontWeight: 700 }}>Cancelar</button>
+          <button onClick={() => { if (v >= 1) onConfirmar(v); }} style={{ flex: 1.5, background: `${T.green}1e`, border: `1px solid ${T.green}66`, borderRadius: 11, padding: "13px", fontSize: 13, color: T.green, cursor: "pointer", fontFamily: "inherit", fontWeight: 800 }}>
+            {manual ? "Reforçar — vou registar a compra" : "Reforçar no broker"}
+          </button>
+        </div>
+      </div>
     </div>
   );
 }
@@ -912,6 +1006,7 @@ export default function TradeAI() {
   const [modalInput, setModalInput] = useState(""); // valor do campo de input do modal (quando aplicável)
   useEffect(() => { if (confirmModal?.inputLabel) setModalInput(confirmModal.inputDefault ?? ""); }, [confirmModal]);
   const [revisaoPlanoId, setRevisaoPlanoId] = useState(null); // plano em revisão de reforço (IA)
+  const [reforcoPlano, setReforcoPlano] = useState(null); // { plano } em reforço (mostra repartição €)
   const [suggestCats, setSuggestCats] = useState([]); // categorias selecionadas ([] = todas)
   const [editAmounts, setEditAmounts] = useState({}); // { [opId]: valor € a investir por sugestão }
   const [tick, setTick]             = useState(0);
@@ -4539,7 +4634,13 @@ JSON: {"signals":[{"id":"btc","sinal":"COMPRAR|VENDER|AGUARDAR","razao":"1 frase
     // Migração suave: se houver plano antigo (dcaCarteira) e ainda não houver
     // dcaPlanos, converte-o num plano "Principal" da primeira vez.
     const planos = Array.isArray(s.dcaPlanos) ? s.dcaPlanos : [];
-    const nomeAtivo = (id) => { const a = ASSETS.find(x => x.id === id); return a ? `${a.icon || ""} ${a.name}` : id; };
+    const nomeAtivo = (idOrItem) => {
+      const item = typeof idOrItem === "object" ? idOrItem : null;
+      const id = item ? item.id : idOrItem;
+      if (item?.custom) return `📝 ${item.nome || id}`;
+      const a = ASSETS.find(x => x.id === id);
+      return a ? `${a.icon || ""} ${a.name}` : id;
+    };
     // Dado a carteira de um plano, descobre que broker(s) conseguem negociá-la.
     // Mapeia a categoria de cada ativo às assetClasses dos brokers disponíveis.
     const brokersDisp = Array.isArray(botStatus?.brokers) ? botStatus.brokers : [];
@@ -4585,27 +4686,7 @@ JSON: {"signals":[{"id":"btc","sinal":"COMPRAR|VENDER|AGUARDAR","razao":"1 frase
     const reforcarPlano = (id) => {
       const plano = planos.find(p => p.id === id);
       if (!plano) return;
-      const sugerido = planosEur[id] || plano.valorPeriodo || 100;
-      const manual = plano.modoExecucao === "manual";
-      setConfirmModal({
-        title: `Reforçar "${plano?.nome || ""}" agora?`,
-        message: manual
-          ? `Cria uma compra extra imediata com os mesmos ativos e proporções do plano. Vais confirmá-la a seguir, como um aporte normal.`
-          : `Executa uma compra extra imediata no broker, com os mesmos ativos e proporções do plano.`,
-        inputLabel: "Valor do reforço (€)",
-        inputDefault: String(Math.round(sugerido)),
-        inputType: "number",
-        icon: "💪",
-        confirmLabel: "Reforçar",
-        onConfirmInput: (val) => {
-          const v = parseFloat(val);
-          if (!(v >= 1)) { toast("Valor inválido", "error"); return; }
-          if (user) cmdToBot({ type: "DCA_REFORCO", planId: id, valor: v },
-            manual ? `💪 Reforço de €${v} em "${plano.nome}" — vais confirmar a compra`
-                   : `💪 Reforço de €${v} em "${plano.nome}" a executar`);
-          setConfirmModal(null);
-        },
-      });
+      setReforcoPlano({ ...plano, _valorSugerido: planosEur[id] || plano.valorPeriodo || 100 });
     };
     // Junta um ativo novo (da revisão) à carteira, renormalizando os pesos p/ ~100.
     const juntarAtivoAoPlano = (planId, novo) => {
@@ -5028,7 +5109,7 @@ JSON: {"signals":[{"id":"btc","sinal":"COMPRAR|VENDER|AGUARDAR","razao":"1 frase
                   return (
                   <div key={c.id} style={{ background: "rgba(0,0,0,0.2)", borderRadius: 8, padding: "8px 12px" }}>
                     <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-                    <span style={{ flex: 1, fontSize: 11.5 }}>{nomeAtivo(c.id)}</span>
+                    <span style={{ flex: 1, fontSize: 11.5 }}>{nomeAtivo(c)}</span>
                     {invAtivo > 0 && <span style={{ fontSize: 10, color: corA, fontWeight: 700, background: `${corA}12`, padding: "2px 8px", borderRadius: 6 }}>{plAtivo >= 0 ? "+" : ""}{pctAtivo.toFixed(1)}%</span>}
                     <input type="number" min={0} max={100} value={c.peso}
                       onChange={(e) => { const nc = [...p.carteira]; nc[i] = { ...nc[i], peso: Math.max(0, Math.min(100, parseInt(e.target.value) || 0)) }; updPlano(p.id, { carteira: nc }); }}
@@ -5056,6 +5137,15 @@ JSON: {"signals":[{"id":"btc","sinal":"COMPRAR|VENDER|AGUARDAR","razao":"1 frase
                 </select>
                 <button onClick={() => { const sel = document.getElementById(`add-${p.id}`); if (sel?.value) updPlano(p.id, { carteira: [...(p.carteira || []), { id: sel.value, peso: 0 }] }); }}
                   style={{ padding: "7px 14px", borderRadius: 8, border: `1px solid ${T.accent}`, background: `${T.accent}1a`, color: T.accent, fontWeight: 700, fontSize: 11, cursor: "pointer" }}>+ Ativo</button>
+                <button onClick={() => {
+                  const nome = window.prompt("Nome do ativo que compras à mão (ex.: 'Meu fundo XPTO'):");
+                  if (!nome || !nome.trim()) return;
+                  const cid = "custom_" + nome.trim().toLowerCase().replace(/[^a-z0-9]+/g, "_").slice(0, 20) + "_" + Date.now().toString(36).slice(-4);
+                  updPlano(p.id, { carteira: [...(p.carteira || []), { id: cid, peso: 0, custom: true, nome: nome.trim() }] });
+                  toast(`✅ "${nome.trim()}" adicionado (só para cálculo — não é negociado pelo bot)`, "success");
+                }}
+                  title="Adiciona um ativo que a app não conhece, só para cálculo e registo. O bot nunca tenta comprá-lo."
+                  style={{ padding: "7px 14px", borderRadius: 8, border: `1px dashed ${T.muted}`, background: "transparent", color: T.muted, fontWeight: 700, fontSize: 11, cursor: "pointer", whiteSpace: "nowrap" }}>+ Personalizado</button>
               </div>
 
               {/* Botão Iniciar plano: faz a 1ª compra agora e arranca o agendamento.
@@ -8929,6 +9019,17 @@ JSON puro:
       )}
 
       {/* ── MODAL DE CONFIRMAÇÃO BONITO ── */}
+      {reforcoPlano && (
+        <ReforcoModal plano={reforcoPlano} ASSETS={ASSETS}
+          onFechar={() => setReforcoPlano(null)}
+          onConfirmar={(v) => {
+            const manual = reforcoPlano.modoExecucao === "manual";
+            if (user) cmdToBot({ type: "DCA_REFORCO", planId: reforcoPlano.id, valor: v },
+              manual ? `💪 Reforço de €${v} em "${reforcoPlano.nome}" — vais registar a compra`
+                     : `💪 Reforço de €${v} em "${reforcoPlano.nome}" a executar`);
+            setReforcoPlano(null);
+          }} />
+      )}
       {confirmModal && (
         <div style={{
           position: "fixed", inset: 0, background: "rgba(0,0,0,0.78)",
