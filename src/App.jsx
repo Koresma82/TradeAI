@@ -554,6 +554,105 @@ Responde SÓ com este JSON:
   );
 }
 
+// ── Revisão de reforço ────────────────────────────────────────────────────
+// Antes de reinvestir num plano existente, corre a IA como se montasse o plano
+// de raiz HOJE, partindo da carteira atual. Diz se os ativos ainda fazem sentido
+// e, se houver variância, propõe ativos NOVOS que encaixam no perfil — que o
+// utilizador pode juntar ao DCA com um clique. Não prevê preços; reavalia a
+// composição face ao universo disponível.
+function RevisaoReforco({ plano, valorPlano, callAI, ASSETS, brokersDisp, onAdicionar, onFechar }) {
+  const [loading, setLoading] = useState(true);
+  const [erro, setErro] = useState(null);
+  const [rev, setRev] = useState(null);
+
+  useEffect(() => {
+    let vivo = true;
+    (async () => {
+      try {
+        const catParaClasse = { Crypto: "crypto", ETF: "etf", "Ação": "stock", Commodity: "commodity", Forex: "forex" };
+        const brokersAtivos = brokersDisp.length ? brokersDisp : [{ assetClasses: ["etf", "stock", "commodity"], nome: "XTB" }];
+        const classesOk = new Set();
+        brokersAtivos.forEach(b => (b.assetClasses || []).forEach(c => classesOk.add(c)));
+        const universoAtivos = ASSETS.filter(a => classesOk.has(catParaClasse[a.cat]));
+        const universo = universoAtivos.map(a => `${a.id} (${a.name}, ${a.cat})`).join(", ");
+        const atuais = (plano.carteira || []).map(c => {
+          const a = ASSETS.find(x => x.id === c.id);
+          return `${c.id} (${a?.name || c.id}, ${a?.cat || "?"}, peso ${c.peso}%)`;
+        }).join(", ");
+        const { result } = await callAI({
+          max_tokens: 950,
+          system: "És um educador financeiro em português de Portugal. Reavalias carteiras DCA de forma sóbria. NÃO prevês preços nem garantes retornos e deixas isso claro. NÃO és consultor financeiro. Respondes SÓ em JSON puro, sem markdown.",
+          messages: [{ role: "user", content:
+`Um utilizador vai reforçar (reinvestir) o plano DCA "${plano.nome}". A carteira ATUAL é: ${atuais}.
+
+Reavalia como se montasses o plano HOJE. Universo disponível (usa SÓ estes ids): ${universo}
+
+Devolve:
+1. Um veredito curto sobre a carteira atual: continua adequada ou não, e porquê (sem prever preços — foca em diversificação e coerência de perfil).
+2. Se e SÓ SE fizer sentido, 1 a 2 ativos NOVOS do universo que complementariam a carteira. Para cada um, peso pequeno e razão. Se a carteira já estiver bem, devolve lista vazia — não inventes ativos só para sugerir.
+
+Regras: NUNCA sugiras um id fora do universo. NUNCA sugiras um ativo que já está na carteira. Não prometas que vai subir.
+
+Responde SÓ com este JSON:
+{"veredito":"1-2 frases em pt-PT","manter":true,"novos":[{"id":"gld","peso":10,"razao":"frase curta"}],"aviso":"1 frase: não é aconselhamento, há risco, o passado não garante o futuro"}` }],
+        });
+        if (!vivo) return;
+        const idsUniverso = new Set(universoAtivos.map(a => a.id));
+        const idsAtuais = new Set((plano.carteira || []).map(c => c.id));
+        result.novos = (result.novos || []).filter(n => idsUniverso.has(n.id) && !idsAtuais.has(n.id));
+        setRev(result);
+      } catch (e) {
+        if (vivo) setErro(e.message || "Falha ao contactar a IA");
+      } finally {
+        if (vivo) setLoading(false);
+      }
+    })();
+    return () => { vivo = false; };
+  }, [plano.id]);
+
+  return (
+    <div style={{ marginTop: 12, padding: "14px 16px", borderRadius: 10, background: `${T.accent}0a`, border: `1px solid ${T.accent}33` }}>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 10 }}>
+        <span style={{ fontSize: 12, fontWeight: 800 }}>🔎 Revisão antes de reforçar</span>
+        <button onClick={onFechar} style={{ border: "none", background: "none", color: T.muted, cursor: "pointer", fontSize: 16 }}>×</button>
+      </div>
+      {loading && <div style={{ fontSize: 11, color: T.muted }}>A reavaliar a carteira com a IA…</div>}
+      {erro && <div style={{ fontSize: 11, color: T.red }}>⚠️ {erro}</div>}
+      {rev && (
+        <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+          <div style={{ fontSize: 11.5, color: T.text, lineHeight: 1.6 }}>{rev.veredito}</div>
+          {rev.novos && rev.novos.length > 0 ? (
+            <div>
+              <div style={{ fontSize: 10.5, color: T.muted, marginBottom: 8, fontWeight: 700 }}>💡 Ativos novos a considerar:</div>
+              <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+                {rev.novos.map(n => {
+                  const a = ASSETS.find(x => x.id === n.id);
+                  return (
+                    <div key={n.id} style={{ display: "flex", alignItems: "center", gap: 10, padding: "10px 12px", borderRadius: 8, background: "rgba(0,0,0,0.2)", border: `1px solid ${T.border}` }}>
+                      <div style={{ flex: 1 }}>
+                        <div style={{ fontSize: 12, fontWeight: 700, color: T.aLight }}>{a?.icon || ""} {a?.name || n.id} <span style={{ fontSize: 10, color: T.muted }}>· {a?.cat}</span></div>
+                        <div style={{ fontSize: 9.5, color: T.muted, marginTop: 2, lineHeight: 1.4 }}>{n.razao}</div>
+                      </div>
+                      <button onClick={() => onAdicionar(n)} style={{ border: `1px solid ${T.green}55`, background: `${T.green}18`, color: T.green, cursor: "pointer", fontSize: 10.5, fontWeight: 700, padding: "6px 12px", borderRadius: 7, whiteSpace: "nowrap" }}>
+                        + juntar ({n.peso}%)
+                      </button>
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+          ) : (
+            <div style={{ fontSize: 11, color: T.green, background: `${T.green}12`, borderRadius: 6, padding: "8px 10px" }}>
+              ✓ A carteira atual continua equilibrada — reforça nas mesmas proporções.
+            </div>
+          )}
+          {rev.aviso && <div style={{ fontSize: 9.5, color: T.muted, fontStyle: "italic", lineHeight: 1.5 }}>{rev.aviso}</div>}
+        </div>
+      )}
+    </div>
+  );
+}
+
 // ── Card de ordem manual (módulo — estado estável) ──
 function OrdemManualCard({ ordem, ASSETS, T, Glass, precoAtual, onConfirmar }) {
   const nomeAtivo = (id) => { const a = ASSETS.find(x => x.id === id); return a ? `${a.icon || ""} ${a.name}` : id; };
@@ -810,6 +909,9 @@ export default function TradeAI() {
   const [suggestLoading, setSuggestLoading] = useState(false);
   const [toasts, setToasts]         = useState([]);
   const [confirmModal, setConfirmModal] = useState(null); // { title, message, lines, danger, confirmLabel, onConfirm }
+  const [modalInput, setModalInput] = useState(""); // valor do campo de input do modal (quando aplicável)
+  useEffect(() => { if (confirmModal?.inputLabel) setModalInput(confirmModal.inputDefault ?? ""); }, [confirmModal]);
+  const [revisaoPlanoId, setRevisaoPlanoId] = useState(null); // plano em revisão de reforço (IA)
   const [suggestCats, setSuggestCats] = useState([]); // categorias selecionadas ([] = todas)
   const [editAmounts, setEditAmounts] = useState({}); // { [opId]: valor € a investir por sugestão }
   const [tick, setTick]             = useState(0);
@@ -4479,6 +4581,47 @@ JSON: {"signals":[{"id":"btc","sinal":"COMPRAR|VENDER|AGUARDAR","razao":"1 frase
       salvar({ dcaPlanos: [...planos, p] }, `✅ Plano "${p.nome}" criado`);
     };
     const updPlano = (id, patch) => salvar({ dcaPlanos: planos.map(p => p.id === id ? { ...p, ...patch } : p) });
+    // Reforço imediato: aporte extra agora, fora do calendário, mesma carteira.
+    const reforcarPlano = (id) => {
+      const plano = planos.find(p => p.id === id);
+      if (!plano) return;
+      const sugerido = planosEur[id] || plano.valorPeriodo || 100;
+      const manual = plano.modoExecucao === "manual";
+      setConfirmModal({
+        title: `Reforçar "${plano?.nome || ""}" agora?`,
+        message: manual
+          ? `Cria uma compra extra imediata com os mesmos ativos e proporções do plano. Vais confirmá-la a seguir, como um aporte normal.`
+          : `Executa uma compra extra imediata no broker, com os mesmos ativos e proporções do plano.`,
+        inputLabel: "Valor do reforço (€)",
+        inputDefault: String(Math.round(sugerido)),
+        inputType: "number",
+        icon: "💪",
+        confirmLabel: "Reforçar",
+        onConfirmInput: (val) => {
+          const v = parseFloat(val);
+          if (!(v >= 1)) { toast("Valor inválido", "error"); return; }
+          if (user) cmdToBot({ type: "DCA_REFORCO", planId: id, valor: v },
+            manual ? `💪 Reforço de €${v} em "${plano.nome}" — vais confirmar a compra`
+                   : `💪 Reforço de €${v} em "${plano.nome}" a executar`);
+          setConfirmModal(null);
+        },
+      });
+    };
+    // Junta um ativo novo (da revisão) à carteira, renormalizando os pesos p/ ~100.
+    const juntarAtivoAoPlano = (planId, novo) => {
+      const plano = planos.find(p => p.id === planId);
+      if (!plano) return;
+      const carteira = Array.isArray(plano.carteira) ? [...plano.carteira] : [];
+      if (carteira.some(c => c.id === novo.id)) { toast("Esse ativo já está no plano", "warn"); return; }
+      const pesoNovo = Math.max(1, Number(novo.peso) || 10);
+      const somaAtual = carteira.reduce((a, c) => a + (Number(c.peso) || 0), 0) || 100;
+      const fator = (100 - pesoNovo) / somaAtual;
+      const nova = carteira.map(c => ({ ...c, peso: +(c.peso * fator).toFixed(1) }));
+      nova.push({ id: novo.id, peso: pesoNovo });
+      updPlano(planId, { carteira: nova });
+      const a = ASSETS.find(x => x.id === novo.id);
+      toast(`✅ ${a?.name || novo.id} juntado ao plano (${pesoNovo}%)`, "success");
+    };
     const delPlano = (id) => {
       const plano = planos.find(p => p.id === id);
       const posAbertas = positions.filter(x => (x.status === "ABERTA" || !x.status) && x.stratId === "dca" && (x.planId || "principal") === id);
@@ -4680,8 +4823,24 @@ JSON: {"signals":[{"id":"btc","sinal":"COMPRAR|VENDER|AGUARDAR","razao":"1 frase
               <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 12, gap: 10 }}>
                 <input value={p.nome} onChange={(e) => updPlano(p.id, { nome: e.target.value })}
                   style={{ flex: 1, padding: "6px 10px", borderRadius: 6, border: `1px solid ${T.border}`, background: "rgba(0,0,0,0.2)", color: T.aLight, fontSize: 13, fontWeight: 700 }} />
-                <button onClick={() => delPlano(p.id)} style={{ border: "none", background: "none", color: T.red, cursor: "pointer", fontSize: 18 }}>×</button>
+                <button onClick={() => setRevisaoPlanoId(revisaoPlanoId === p.id ? null : p.id)}
+                  title="Reavaliar a carteira com a IA antes de reforçar — vê se os ativos ainda encaixam ou se há um novo a considerar"
+                  style={{ border: `1px solid ${T.accent}55`, background: `${T.accent}18`, color: T.aLight, cursor: "pointer", fontSize: 11, fontWeight: 700, padding: "6px 12px", borderRadius: 7, whiteSpace: "nowrap" }}>
+                  🔎 Rever
+                </button>
+                <button onClick={() => reforcarPlano(p.id)}
+                  title="Aporte extra agora, com os mesmos ativos e proporções do plano"
+                  style={{ border: `1px solid ${T.green}44`, background: `${T.green}18`, color: T.green, cursor: "pointer", fontSize: 11, fontWeight: 700, padding: "6px 12px", borderRadius: 7, whiteSpace: "nowrap" }}>
+                  💪 Reforçar
+                </button>
+                <button onClick={() => delPlano(p.id)} title="Apagar plano" style={{ border: "none", background: "none", color: T.red, cursor: "pointer", fontSize: 18 }}>×</button>
               </div>
+
+              {revisaoPlanoId === p.id && (
+                <RevisaoReforco plano={p} valorPlano={planosEur[p.id] || 0} callAI={callAI} ASSETS={ASSETS} brokersDisp={brokersDisp}
+                  onAdicionar={(novo) => juntarAtivoAoPlano(p.id, novo)}
+                  onFechar={() => setRevisaoPlanoId(null)} />
+              )}
 
               {/* Contabilidade de aportes (planos manuais com lembretes) */}
               {p.modoExecucao === "manual" && liveSettings.dcaLembretes && (() => {
@@ -8809,6 +8968,18 @@ JSON puro:
                 ))}
               </div>
             )}
+            {confirmModal.inputLabel && (
+              <div style={{ marginBottom: 20 }}>
+                <div style={{ fontSize: 11, color: T.muted, marginBottom: 6, fontWeight: 600 }}>{confirmModal.inputLabel}</div>
+                <input
+                  type={confirmModal.inputType || "text"}
+                  value={modalInput}
+                  autoFocus
+                  onChange={(e) => setModalInput(e.target.value)}
+                  onKeyDown={(e) => { if (e.key === "Enter") { confirmModal.onConfirmInput?.(modalInput); } }}
+                  style={{ width: "100%", padding: "11px 13px", borderRadius: 10, border: `1px solid ${T.accent}55`, background: "rgba(0,0,0,0.3)", color: T.aLight, fontSize: 15, fontWeight: 700, fontFamily: "inherit", textAlign: "center" }} />
+              </div>
+            )}
             <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
               <button onClick={() => setConfirmModal(null)} style={{
                 flex: 1, background: "rgba(255,255,255,0.05)", border: `1px solid ${T.border}`,
@@ -8830,6 +9001,7 @@ JSON puro:
                 }}>{confirmModal.extra2Label}</button>
               )}
               <button onClick={() => {
+                if (confirmModal.onConfirmInput) { confirmModal.onConfirmInput(modalInput); return; }
                 const fn = confirmModal.onConfirm;
                 setConfirmModal(null);
                 fn?.();
